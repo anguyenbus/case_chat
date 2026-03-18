@@ -602,11 +602,10 @@
             chatMessages.scrollTop = chatMessages.scrollHeight;
 
             try {
-                // Call AgentOS API with streaming enabled
+                // Call AgentOS API without streaming to avoid duplication
                 const formData = new FormData();
                 formData.append('message', ragContextMessage);  // Use ragContextMessage with document context
                 formData.append('user_id', sessionId);
-                formData.append('stream', 'true');
 
                 const response = await fetch(`${API_BASE}/agents/${AGENT_ID}/runs`, {
                     method: 'POST',
@@ -617,41 +616,18 @@
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
 
-                // Stream the response
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                const streamingText = document.querySelector('.streaming-text');
-                let fullText = '';
+                // Parse the response
+                const result = await response.json();
+                const fullText = result.content || result.response || 'No response content';
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
-
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            const data = line.slice(6);
-                            if (data === '[DONE]') continue;
-
-                            try {
-                                const parsed = JSON.parse(data);
-                                if (parsed.content) {
-                                    fullText += parsed.content;
-                                    streamingText.textContent = fullText;
-                                    chatMessages.scrollTop = chatMessages.scrollHeight;
-                                }
-                            } catch (e) {
-                                console.warn('[STREAM] Parse error:', e);
-                            }
-                        }
+                // Display the response
+                const responseDiv = document.getElementById('streaming-response');
+                if (responseDiv) {
+                    const contentDiv = responseDiv.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.textContent = fullText;
                     }
                 }
-
-                // Remove cursor and finalize
-                document.querySelector('.cursor').remove();
-                streamingText.classList.remove('streaming-text');
 
             } catch (error) {
                 console.error('Error:', error);

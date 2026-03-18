@@ -26,8 +26,8 @@ from dotenv import load_dotenv
 # NOTE: Load environment before other case_chat imports
 load_dotenv()
 
+from case_chat.agents.agent_factory import AgentFactory  # noqa: E402
 from case_chat.agents.session_manager import SessionManager  # noqa: E402
-from case_chat.agents.team_factory import TeamFactory  # noqa: E402
 from case_chat.api.documents import router as documents_router  # noqa: E402
 from case_chat.config import get_app_settings  # noqa: E402
 
@@ -61,24 +61,22 @@ def main() -> None:
 
     logger.info("[SETUP] SessionManager initialized: db_path=tmp/case_chat.db")
 
-    # Create team factory with session support
-    factory = TeamFactory(session_manager=session_manager)
+    # Create agent factory with session support
+    factory = AgentFactory(session_manager=session_manager)
 
-    # Create the Case Chat Team
-    team = factory.create_team(session_id="agentos-demo")
+    # Create the Case Chat Agent
+    agent = factory.create_agent(session_id="agentos-demo")
 
-    logger.info("[AGENT] Created Case Chat Team")
-    logger.info("[AGENT] Team: case-chat-team")
+    logger.info("[AGENT] Created Case Chat Agent")
     logger.info("[AGENT] Agent: case-chat-assistant")
+    logger.info("[AGENT] Session History Limit: 3 conversation turns")
     logger.info("[AGENT] Instructions: Tax law case analysis")
 
-    # Create AgentOS instance with agents
-    # Extract agents from team so they are registered properly
-    agents = team.members if hasattr(team, "members") else [team]
-
+    # Create AgentOS instance with agent
+    # Pass agent directly (not wrapped in list)
     agent_os = AgentOS(
         description="Case Chat - Tax Law Case Analysis",
-        agents=agents,
+        agents=[agent],
         cors_allowed_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
     )
 
@@ -95,6 +93,33 @@ def main() -> None:
     logger.info("Control Plane: http://localhost:7777")
     logger.info("API Docs: http://localhost:7777/docs")
     logger.info("Health Check: http://localhost:7777/health")
+    logger.info("")
+
+    # Add metrics collection middleware for AgentOS endpoints
+    from fastapi import Request
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class MetricsMiddleware(BaseHTTPMiddleware):
+        """Middleware to collect metrics from agent responses."""
+
+        async def dispatch(self, request: Request, call_next):
+            # Process request
+            response = await call_next(request)
+
+            # Collect metrics for agent runs
+            if "/agents/" in request.url.path and "/runs" in request.url.path:
+                try:
+                    # Log request completed
+                    logger.info(f"[METRICS] Agent request completed: {request.url.path}")
+                except Exception as e:
+                    logger.warning(f"[METRICS] Failed to collect metrics: {e}")
+
+            return response
+
+    # Add metrics middleware to app
+    app.add_middleware(MetricsMiddleware)
+
+    logger.info("[API] Added metrics collection middleware")
     logger.info("")
     logger.info("Press Ctrl+C to stop the server")
     logger.info("")
