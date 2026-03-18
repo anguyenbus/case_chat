@@ -79,6 +79,32 @@ class AppSettings(BaseSettings):
         description="Default model ID for agent",
     )
 
+    # Document and RAG configuration
+    chroma_db_path: Path = Field(
+        default="data/chroma",
+        description="Path to ChromaDB vector storage",
+    )
+    documents_path: Path = Field(
+        default="data/documents",
+        description="Path to uploaded document storage",
+    )
+    max_file_size_mb: int = Field(
+        default=50,
+        description="Maximum file size in MB for uploads",
+    )
+    chunk_size_tokens: int = Field(
+        default=750,
+        description="Target chunk size in tokens",
+    )
+    chunk_overlap_pct: int = Field(
+        default=10,
+        description="Chunk overlap percentage (0-100)",
+    )
+    allowed_file_types: list[str] = Field(
+        default=[".pdf", ".txt", ".docx"],
+        description="Allowed file extensions for upload",
+    )
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -88,6 +114,31 @@ class AppSettings(BaseSettings):
         if v_upper not in valid_levels:
             raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
         return v_upper
+
+    @field_validator("chunk_overlap_pct")
+    @classmethod
+    def validate_chunk_overlap_pct(cls, v: int) -> int:
+        """Validate chunk overlap percentage is between 0 and 100."""
+        if not 0 <= v <= 100:
+            raise ValueError(f"Chunk overlap must be between 0 and 100, got {v}")
+        return v
+
+    @field_validator("max_file_size_mb")
+    @classmethod
+    def validate_max_file_size_mb(cls, v: int) -> int:
+        """Validate maximum file size is positive."""
+        if v <= 0:
+            raise ValueError(f"Max file size must be positive, got {v}")
+        return v
+
+    @field_validator("allowed_file_types")
+    @classmethod
+    def validate_allowed_file_types(cls, v: list[str]) -> list[str]:
+        """Validate allowed file types start with dot."""
+        for file_type in v:
+            if not file_type.startswith("."):
+                raise ValueError(f"File type must start with '.', got {file_type}")
+        return v
 
 
 # ============================================================================

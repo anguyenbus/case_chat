@@ -26,7 +26,7 @@ wheels/
 
 # PyInstaller
 *.manifest
-*.spec
+.spec
 
 # Installer logs
 pip-log.txt
@@ -123,3 +123,6 @@ agent-os/
 user_uploads/
 *.env
 knowledge_base/
+
+# Document and RAG data
+data/

@@ -28,6 +28,7 @@ load_dotenv()
 
 from case_chat.agents.session_manager import SessionManager  # noqa: E402
 from case_chat.agents.team_factory import TeamFactory  # noqa: E402
+from case_chat.api.documents import router as documents_router  # noqa: E402
 from case_chat.config import get_app_settings  # noqa: E402
 
 # Configure logging - NO EMOJIS, use tags instead
@@ -83,6 +84,11 @@ def main() -> None:
 
     # Get the FastAPI app
     app = agent_os.get_app()
+
+    # Include document upload router
+    app.include_router(documents_router, tags=["documents"])
+
+    logger.info("[API] Included document upload endpoints")
 
     logger.info("")
     logger.info("=== AgentOS Ready ===")

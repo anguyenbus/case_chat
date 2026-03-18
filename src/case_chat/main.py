@@ -9,6 +9,9 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from case_chat.api.documents import router as documents_router
 
 # Configure logging
 logging.basicConfig(
@@ -28,6 +31,22 @@ app = FastAPI(
     version=APP_VERSION,
     description="Tax Law Case Analysis with AI Agents",
 )
+
+# Configure CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for local development
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
+)
+
+
+# ============================================================================
+# Include Routers
+# ============================================================================
+
+app.include_router(documents_router)
 
 
 # ============================================================================
@@ -99,5 +118,6 @@ async def root() -> dict[str, str]:
             "health": "/health",
             "ping": "/ping",
             "docs": "/docs",
+            "documents": "/api/documents",
         },
     }

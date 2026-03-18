@@ -31,6 +31,14 @@ dependencies = [
     "sqlitedict>=2.1.0",
     "sqlalchemy>=2.0.46",
     "zai>=0.0.2",
+    # Document processing and RAG
+    "chromadb>=0.4.0",
+    "pypdf>=3.17.0",
+    "python-docx>=1.0.0",
+    "langchain>=0.1.0",
+    "langchain-text-splitters>=0.0.1",
+    # Local embeddings (100% free, no API calls)
+    "sentence-transformers>=2.2.0",
 ]
 
 [project.optional-dependencies]
@@ -58,8 +66,6 @@ auth = [
 
 ingestion = [
     # Document ingestion (for future use)
-    "pypdf>=3.17.0",
-    "python-docx>=1.0.0",
     "beautifulsoup4>=4.12.0",
 ]
 

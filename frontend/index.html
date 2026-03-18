@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Case Chat - Local Agent UI</title>
     <style>
         * {
@@ -48,6 +51,86 @@
         .chat-header p {
             font-size: 14px;
             opacity: 0.9;
+            margin-bottom: 10px;
+        }
+
+        .rag-toggle-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .rag-toggle {
+            position: relative;
+            width: 50px;
+            height: 26px;
+        }
+
+        .rag-toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.3);
+            transition: .4s;
+            border-radius: 26px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #4caf50;
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(24px);
+        }
+
+        .rag-label {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .rag-status {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+
+        .documents-link {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 6px 16px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            text-decoration: none;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .documents-link:hover {
+            background: rgba(255, 255, 255, 0.3);
         }
 
         .chat-messages {
@@ -93,6 +176,28 @@
             padding: 2px 6px;
             border-radius: 3px;
             font-family: 'Courier New', monospace;
+        }
+
+        .citations {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #ddd;
+        }
+
+        .citation {
+            display: inline-block;
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin: 2px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .citation:hover {
+            background: #bbdefb;
         }
 
         .chat-input-container {
@@ -187,6 +292,95 @@
             background: #f44336;
             color: white;
         }
+
+        .rag-indicator {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .rag-enabled {
+            background: #4caf50;
+            color: white;
+        }
+
+        .rag-disabled {
+            background: #9e9e9e;
+            color: white;
+        }
+
+        .chunks-header {
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .chunks-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .chunk-item {
+            background: #f0f4ff;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 8px;
+        }
+
+        .chunk-item:hover {
+            background: #e0e7ff;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+            border-color: #764ba2;
+        }
+
+        .chunk-title {
+            font-weight: 700;
+            color: #667eea;
+            font-size: 14px;
+            margin-bottom: 6px;
+        }
+
+        .chunk-meta {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .chunk-preview {
+            font-size: 12px;
+            color: #333;
+            line-height: 1.5;
+            font-style: italic;
+            background: rgba(255, 255, 255, 0.6);
+            padding: 8px;
+            border-radius: 4px;
+            border-left: 3px solid #667eea;
+        }
+
+        .streaming-response {
+            position: relative;
+        }
+
+        .cursor {
+            animation: blink 1s infinite;
+            margin-left: 2px;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
     </style>
 </head>
 <body>
@@ -194,12 +388,23 @@
         <div class="chat-header">
             <h1>Case Chat <span id="status" class="status-badge status-disconnected">Disconnected</span></h1>
             <p>HR Legal Case Analysis Assistant - GLM-5 Model</p>
+
+            <div class="rag-toggle-container">
+                <label class="rag-toggle">
+                    <input type="checkbox" id="ragToggle" checked onchange="toggleRAG()">
+                    <span class="slider"></span>
+                </label>
+                <span class="rag-label">Enable Document Search (RAG)</span>
+                <span id="ragIndicator" class="rag-indicator rag-enabled">ON</span>
+            </div>
+
+            <a href="documents.html" class="documents-link">Manage Documents</a>
         </div>
 
         <div class="chat-messages" id="chatMessages">
             <div class="message message-agent">
                 <div class="message-content">
-                    Hello! I'm your HR legal case analysis assistant. How can I help you today?
+                    Hello! I'm your legal tax case analysis assistant. How can I help you today?
                 </div>
             </div>
         </div>
@@ -217,25 +422,98 @@
     </div>
 
     <script>
+        // Cache buster - force reload on page update
+        const PAGE_VERSION = '2026-03-18-20:25-v5-rag-debug';
+        console.log('[PAGE VERSION]', PAGE_VERSION, 'Loading with RAG debugging...');
+
         const API_BASE = 'http://localhost:7777';
         const AGENT_ID = 'case-chat-assistant';
         let sessionId = 'local-session-' + Date.now();
+        let ragEnabled = true;
 
         // Check connection status
         async function checkConnection() {
             try {
+                console.log('[CONNECT] Checking connection to', `${API_BASE}/health`);
                 const response = await fetch(`${API_BASE}/health`);
+                console.log('[CONNECT] Response status:', response.status, 'ok:', response.ok);
                 if (response.ok) {
                     document.getElementById('status').className = 'status-badge status-connected';
                     document.getElementById('status').textContent = 'Connected';
+                    console.log('[CONNECT] ✓ Connected!');
                 }
             } catch (error) {
+                console.error('[CONNECT] ✗ Connection failed:', error);
                 document.getElementById('status').className = 'status-badge status-disconnected';
                 document.getElementById('status').textContent = 'Disconnected';
             }
         }
 
-        // Send message to agent
+        // Toggle RAG
+        function toggleRAG() {
+            ragEnabled = document.getElementById('ragToggle').checked;
+            const indicator = document.getElementById('ragIndicator');
+
+            if (ragEnabled) {
+                indicator.className = 'rag-indicator rag-enabled';
+                indicator.textContent = 'ON';
+            } else {
+                indicator.className = 'rag-indicator rag-disabled';
+                indicator.textContent = 'OFF';
+            }
+        }
+
+        // Search documents for RAG
+        async function searchDocuments(query) {
+            try {
+                const response = await fetch(`${API_BASE}/api/documents/search`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        top_k: 5
+                    })
+                });
+
+                if (!response.ok) {
+                    return null;
+                }
+
+                const data = await response.json();
+                return data.results || [];
+
+            } catch (error) {
+                console.error('Search error:', error);
+                return null;
+            }
+        }
+
+        // Format citations
+        function formatCitations(results) {
+            if (!results || results.length === 0) {
+                return '';
+            }
+
+            let citationsHtml = '<div class="citations"><strong>Sources:</strong> ';
+
+            results.forEach((result, index) => {
+                const relevance = Math.round(result.relevance_score * 100);
+                citationsHtml += `<span class="citation" onclick="showCitation(${index})">[${result.document_id} - ${relevance}%]</span>`;
+            });
+
+            citationsHtml += '</div>';
+            return citationsHtml;
+        }
+
+        // Show citation details
+        function showCitation(index) {
+            // In a full implementation, this would show a modal with chunk details
+            alert('Citation details would be shown here in a full implementation.');
+        }
+
+        // Send message to agent with streaming support
         async function sendMessage() {
             const input = document.getElementById('chatInput');
             const sendButton = document.getElementById('sendButton');
@@ -249,20 +527,86 @@
             input.value = '';
             sendButton.disabled = true;
 
-            // Add loading indicator
-            const loadingDiv = document.createElement('div');
-            loadingDiv.className = 'message message-agent';
-            loadingDiv.innerHTML = '<div class="loading"><div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div></div>';
-            loadingDiv.id = 'loading-indicator';
-            chatMessages.appendChild(loadingDiv);
+            let searchResults = null;
+            let ragContextMessage = message; // Original message for context
+
+            // Search documents if RAG is enabled
+            if (ragEnabled) {
+                console.log('[RAG] Searching documents for:', message);
+
+                // Show searching indicator
+                const searchDiv = document.createElement('div');
+                searchDiv.className = 'message message-agent';
+                searchDiv.innerHTML = '<div class="message-content">🔍 Searching documents...</div>';
+                searchDiv.id = 'rag-status';
+                chatMessages.appendChild(searchDiv);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                searchResults = await searchDocuments(message);
+                console.log('[RAG] Search results:', searchResults);
+
+                // Remove searching indicator
+                const searchStatus = document.getElementById('rag-status');
+                if (searchStatus) searchStatus.remove();
+
+                if (searchResults && searchResults.length > 0) {
+                    console.log('[RAG] Found', searchResults.length, 'relevant chunks');
+
+                    // Display chunks used BEFORE the response
+                    const chunksDiv = document.createElement('div');
+                    chunksDiv.className = 'message message-agent';
+                    chunksDiv.innerHTML = `
+                        <div class="message-content">
+                            <div class="chunks-header">📚 Using ${searchResults.length} document chunks:</div>
+                            <div class="chunks-list">
+                                ${searchResults.map((result, index) => {
+                                    const relevance = Math.round(result.relevance_score * 100);
+                                    const cleanText = result.text.substring(0, 150).replace(/\n/g, ' ');
+                                    return `
+                                        <div class="chunk-item" onclick="showChunkDetails(${index})">
+                                            <div class="chunk-title">📄 Chunk #${index + 1}</div>
+                                            <div class="chunk-meta">${result.document_id} • ${relevance}% match</div>
+                                            <div class="chunk-preview">"${cleanText}..."</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    `;
+                    chunksDiv.id = 'chunks-display';
+                    chatMessages.appendChild(chunksDiv);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                    // Build context for the AI
+                    ragContextMessage = message + '\n\nRelevant document context:\n';
+                    searchResults.forEach((result, index) => {
+                        ragContextMessage += `[${index + 1}] ${result.text}\n`;
+                    });
+                } else {
+                    // Show that RAG is enabled but no results found
+                    const noRagDiv = document.createElement('div');
+                    noRagDiv.className = 'message message-agent';
+                    noRagDiv.innerHTML = '<div class="message-content" style="opacity: 0.7;">📚 Document search enabled - No relevant chunks found</div>';
+                    noRagDiv.id = 'no-rag-results';
+                    chatMessages.appendChild(noRagDiv);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
+            }
+
+            // Create placeholder for streaming response
+            const responseDiv = document.createElement('div');
+            responseDiv.className = 'message message-agent';
+            responseDiv.innerHTML = '<div class="message-content streaming-response"><span class="streaming-text"></span><span class="cursor">▋</span></div>';
+            responseDiv.id = 'streaming-response';
+            chatMessages.appendChild(responseDiv);
             chatMessages.scrollTop = chatMessages.scrollHeight;
 
             try {
-                // Call AgentOS API - create agent run
+                // Call AgentOS API with streaming enabled
                 const formData = new FormData();
-                formData.append('message', message);
+                formData.append('message', ragContextMessage);  // Use ragContextMessage with document context
                 formData.append('user_id', sessionId);
-                formData.append('stream', 'false'); // Disable streaming for simplicity
+                formData.append('stream', 'true');
 
                 const response = await fetch(`${API_BASE}/agents/${AGENT_ID}/runs`, {
                     method: 'POST',
@@ -273,39 +617,71 @@
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
 
-                const data = await response.json();
+                // Stream the response
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                const streamingText = document.querySelector('.streaming-text');
+                let fullText = '';
 
-                // Remove loading indicator
-                const loading = document.getElementById('loading-indicator');
-                if (loading) loading.remove();
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-                // Add agent response to chat
-                // The response structure may vary, try to extract the message
-                let responseText = 'Sorry, I encountered an error processing your request.';
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
 
-                if (data.response) {
-                    responseText = data.response;
-                } else if (data.message) {
-                    responseText = data.message;
-                } else if (data.content) {
-                    responseText = data.content;
-                } else if (typeof data === 'string') {
-                    responseText = data;
-                } else {
-                    responseText = JSON.stringify(data, null, 2);
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '[DONE]') continue;
+
+                            try {
+                                const parsed = JSON.parse(data);
+                                if (parsed.content) {
+                                    fullText += parsed.content;
+                                    streamingText.textContent = fullText;
+                                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                                }
+                            } catch (e) {
+                                console.warn('[STREAM] Parse error:', e);
+                            }
+                        }
+                    }
                 }
 
-                addMessage(responseText, 'agent');
+                // Remove cursor and finalize
+                document.querySelector('.cursor').remove();
+                streamingText.classList.remove('streaming-text');
 
             } catch (error) {
                 console.error('Error:', error);
-                const loading = document.getElementById('loading-indicator');
-                if (loading) loading.remove();
-                addMessage(`Error: ${error.message}. Make sure the AgentOS backend is running on port 7777.`, 'agent');
+                const responseDiv = document.getElementById('streaming-response');
+                if (responseDiv) {
+                    responseDiv.innerHTML = `<div class="message-content">Error: ${error.message}. Make sure the AgentOS backend is running on port 7777.</div>`;
+                }
             } finally {
                 sendButton.disabled = false;
                 input.focus();
             }
+        }
+
+        // Store search results globally for citation display
+        let globalSearchResults = [];
+
+        // Override searchDocuments to store results globally
+        const originalSearchDocuments = searchDocuments;
+        searchDocuments = async function(query) {
+            const results = await originalSearchDocuments(query);
+            globalSearchResults = results || [];
+            return results;
+        }
+
+        // Show chunk details
+        function showChunkDetails(index) {
+            const result = globalSearchResults[index];
+            if (!result) return;
+
+            alert(`Document: ${result.document_id}\n\nChunk Content:\n${result.text}\n\nRelevance: ${Math.round(result.relevance_score * 100)}%`);
         }
 
         function addMessage(content, type) {
