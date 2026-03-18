@@ -1,0 +1,229 @@
+[project]
+name = "case-chat"
+version = "0.1.0"
+description = "Case Chat - HR Legal Case Analysis"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+authors = [
+    {name = "Case Chat Team", email = "dev@casechat.com"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # FastAPI and web framework
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    # Configuration
+    "python-dotenv>=1.0.0",
+    # Logging
+    "rich>=13.7.0",
+    # Agent framework
+    "agno>=0.1.0",
+    "openai>=1.0.0",
+    # Database
+    "sqlitedict>=2.1.0",
+    "sqlalchemy>=2.0.46",
+    "zai>=0.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.12.0",
+    "httpx>=0.25.0",
+    "hypothesis>=6.92.0",
+    # Linting and formatting
+    "ruff>=0.1.8",
+    "black>=23.12.0",
+    # Type checking
+    "mypy>=1.7.0",
+    # Pre-commit
+    "pre-commit>=3.5.0",
+]
+
+auth = [
+    # JWT verification (for future use)
+    "python-jose[cryptography]>=3.3.0",
+]
+
+ingestion = [
+    # Document ingestion (for future use)
+    "pypdf>=3.17.0",
+    "python-docx>=1.0.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+kb = [
+    # Knowledge base (for future use)
+]
+
+[project.urls]
+Homepage = "https://github.com/casechat/case-chat"
+Documentation = "https://docs.casechat.com"
+Repository = "https://github.com/casechat/case-chat"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/case_chat"]
+
+[tool.hatch.build.sources]
+"src/case_chat" = "case_chat"
+
+# ============================================================================
+# Ruff Configuration
+# ============================================================================
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # Pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "UP",    # pyupgrade
+    "D",     # pydocstyle
+]
+
+ignore = [
+    "D203",   # One blank line before class
+    "D212",   # Multi-line docstring summary should start at the first line
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "D100",    # Missing docstring in public module
+    "D101",    # Missing docstring in public class
+    "D102",    # Missing docstring in public method
+    "D103",    # Missing docstring in public function
+    "S101",    # Use of assert detected
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["case_chat"]
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 80
+
+# ============================================================================
+# Pytest Configuration
+# ============================================================================
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--showlocals",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+# ============================================================================
+# Coverage Configuration
+# ============================================================================
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@abstractmethod",
+]
+
+# ============================================================================
+# MyPy Configuration
+# ============================================================================
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+follow_imports = "normal"
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+# ============================================================================
+# Black Configuration
+# ============================================================================
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # defaults
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[dependency-groups]
+dev = [
+    "black>=26.3.1",
+    "hypothesis>=6.151.9",
+    "mypy>=1.19.1",
+    "pre-commit>=4.5.1",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.15.6",
+]
