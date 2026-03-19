@@ -81,6 +81,14 @@ After starting the application and interacting with agents:
 3. Select "case-chat-agent" experiment
 4. View traces for each agent interaction
 
+#### Screenshots
+
+Chat View (document uploaded: Learning The Ropes:  An Introductory Tax Return Case - Kevin E.Flynn et al.):
+![Chat View](https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/e63a42fe-0e43-4350-acea-9039c6439044/a5d4fb043598301c9db4532ad9a3e26a.png?UCloudPublicKey=TOKEN_e15ba47a-d098-4fbd-9afc-a0dcf0e4e621&Expires=1773964373&Signature=NIy+pGj6CRSsqsYPd6lI/+ahPKM=)
+
+MLflow Tracing Demo:
+![MLflow Demo](artifacts/mlflow-demo-small.gif)
+
 #### Troubleshooting
 
 **Server not running**
