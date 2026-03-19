@@ -73,7 +73,6 @@ def main() -> None:
     logger.info("[AGENT] Instructions: Tax law case analysis")
 
     # Create AgentOS instance with agent
-    # Pass agent directly (not wrapped in list)
     agent_os = AgentOS(
         description="Case Chat - Tax Law Case Analysis",
         agents=[agent],
@@ -82,6 +81,28 @@ def main() -> None:
 
     # Get the FastAPI app
     app = agent_os.get_app()
+
+    # Add CORS middleware to allow requests from frontend
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:8080",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:3001",
+            "http://127.0.0.1:8080",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    logger.info(
+        "[CORS] Configured to allow requests from localhost:3000, localhost:3001, localhost:8080"
+    )
 
     # Include document upload router
     app.include_router(documents_router, tags=["documents"])
@@ -93,33 +114,6 @@ def main() -> None:
     logger.info("Control Plane: http://localhost:7777")
     logger.info("API Docs: http://localhost:7777/docs")
     logger.info("Health Check: http://localhost:7777/health")
-    logger.info("")
-
-    # Add metrics collection middleware for AgentOS endpoints
-    from fastapi import Request
-    from starlette.middleware.base import BaseHTTPMiddleware
-
-    class MetricsMiddleware(BaseHTTPMiddleware):
-        """Middleware to collect metrics from agent responses."""
-
-        async def dispatch(self, request: Request, call_next):
-            # Process request
-            response = await call_next(request)
-
-            # Collect metrics for agent runs
-            if "/agents/" in request.url.path and "/runs" in request.url.path:
-                try:
-                    # Log request completed
-                    logger.info(f"[METRICS] Agent request completed: {request.url.path}")
-                except Exception as e:
-                    logger.warning(f"[METRICS] Failed to collect metrics: {e}")
-
-            return response
-
-    # Add metrics middleware to app
-    app.add_middleware(MetricsMiddleware)
-
-    logger.info("[API] Added metrics collection middleware")
     logger.info("")
     logger.info("Press Ctrl+C to stop the server")
     logger.info("")

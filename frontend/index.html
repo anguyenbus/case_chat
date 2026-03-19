@@ -616,16 +616,46 @@
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
 
-                // Parse the response
-                const result = await response.json();
-                const fullText = result.content || result.response || 'No response content';
+                // Read the response as text (AgentOS sends SSE format)
+                const responseText = await response.text();
+                console.log('[DEBUG] Response received, length:', responseText.length);
+
+                // Parse SSE format to extract the actual content
+                // AgentOS sends lines like: "data: {"content": "..."}"
+                let lastContent = '';
+                let runCount = 0;
+                const lines = responseText.split('\n');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6).trim(); // Remove "data: " prefix
+                        if (!data || data === '[DONE]') continue;
+
+                        try {
+                            const parsed = JSON.parse(data);
+                            runCount++;
+                            console.log('[PARSE] Run #' + runCount, 'Keys:', Object.keys(parsed));
+
+                            // Take the last content we find (fixes duplication)
+                            if (parsed.content) {
+                                lastContent = parsed.content;
+                            } else if (parsed.response) {
+                                lastContent = parsed.response;
+                            }
+                        } catch (e) {
+                            console.warn('[PARSE] Failed to parse line:', data.substring(0, 100), e);
+                        }
+                    }
+                }
+
+                console.log('[FINAL] Total runs detected:', runCount, 'Content length:', lastContent.length);
 
                 // Display the response
                 const responseDiv = document.getElementById('streaming-response');
                 if (responseDiv) {
                     const contentDiv = responseDiv.querySelector('.message-content');
                     if (contentDiv) {
-                        contentDiv.textContent = fullText;
+                        contentDiv.textContent = lastContent || 'No response content';
                     }
                 }
 

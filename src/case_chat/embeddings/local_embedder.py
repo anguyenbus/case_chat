@@ -2,13 +2,18 @@
 Local embedding service.
 
 Generates embeddings using sentence-transformers (100% local).
+Implements Agno's Embedder interface for compatibility with KnowledgeTools.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Final
+
+from agno.knowledge.embedder.base import Embedder
 
 logger = logging.getLogger(__name__)
 
@@ -18,26 +23,31 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 
-class LocalEmbedder:
+class LocalEmbedder(Embedder):
     """
     Generate embeddings using sentence-transformers (100% local).
 
     Uses pre-trained sentence-transformer models to generate vector
     embeddings for text chunks. No API calls required - everything
-    runs locally.
+    runs locally. Implements Agno's Embedder interface for use with
+    KnowledgeTools and RAG.
 
     Attributes
     ----------
+    dimensions : int
+        Dimension of the embedding vectors (set by Embedder base class)
+    enable_batch : bool
+        Whether batch embedding is enabled
+    batch_size : int
+        Number of texts to process in each batch
     _model_name : str
         Name of the sentence-transformer model
     _model : SentenceTransformer
         Loaded sentence-transformer model
-    _embedding_dim : int
-        Dimension of the embedding vectors
 
     """
 
-    __slots__ = ("_model_name", "_model", "_embedding_dim")
+    __slots__ = ("_model_name", "_model")
 
     # Recommended models for Chinese and English
     DEFAULT_MODEL: Final[str] = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
@@ -68,7 +78,7 @@ class LocalEmbedder:
         Examples
         --------
         >>> embedder = LocalEmbedder()
-        >>> embedding = embedder.embed_text("Hello world")
+        >>> embedding = embedder.get_embedding("Hello world")
 
         """
         self._model_name = model_name or self.DEFAULT_MODEL
@@ -87,12 +97,12 @@ class LocalEmbedder:
                 device="cpu",  # Force CPU to avoid CUDA compatibility issues
             )
 
-            # Get embedding dimension
-            self._embedding_dim = self._model.get_sentence_embedding_dimension()
+            # Get embedding dimension and set it for Embedder base class
+            self.dimensions = self._model.get_sentence_embedding_dimension()
+            # Enable batch processing for better performance
+            self.enable_batch = True
 
-            logger.info(
-                f"Loaded local embedder: {self._model_name} (dimension={self._embedding_dim})"
-            )
+            logger.info(f"Loaded local embedder: {self._model_name} (dimension={self.dimensions})")
 
         except ImportError as e:
             raise ImportError(
@@ -176,7 +186,7 @@ class LocalEmbedder:
         # Convert to list of lists
         embedding_list = embeddings.tolist()
 
-        logger.info(f"Generated {len(embedding_list)} embeddings (dim={self._embedding_dim})")
+        logger.info(f"Generated {len(embedding_list)} embeddings (dim={self.dimensions})")
 
         return embedding_list
 
@@ -191,4 +201,125 @@ class LocalEmbedder:
             Embedding dimension
 
         """
-        return self._embedding_dim
+        return self.dimensions
+
+    # ========================================================================
+    # Agno Embedder Interface Implementation
+    # ========================================================================
+
+    def get_embedding(self, text: str) -> list[float]:
+        """
+        Generate embedding for a single text (Agno interface).
+
+        This method implements the Agno Embedder interface for use with
+        KnowledgeTools and RAG.
+
+        Parameters
+        ----------
+        text : str
+            Text to embed
+
+        Returns
+        -------
+        list[float]
+            Embedding vector
+
+        Raises
+        ------
+        ValueError
+            If text is empty
+
+        Examples
+        --------
+        >>> embedder = LocalEmbedder()
+        >>> embedding = embedder.get_embedding("Hello world")
+
+        """
+        return self.embed_text(text)
+
+    def get_embedding_and_usage(self, text: str) -> tuple[list[float], dict | None]:
+        """
+        Generate embedding for a single text with usage info (Agno interface).
+
+        This method implements the Agno Embedder interface. Since
+        sentence-transformers is a local model with no API usage tracking,
+        the usage dict is always None.
+
+        Parameters
+        ----------
+        text : str
+            Text to embed
+
+        Returns
+        -------
+        tuple[list[float], Optional[dict]]
+            Embedding vector and None for usage
+
+        Examples
+        --------
+        >>> embedder = LocalEmbedder()
+        >>> embedding, usage = embedder.get_embedding_and_usage("Hello world")
+        >>> assert usage is None  # Local model has no usage tracking
+
+        """
+        embedding = self.embed_text(text)
+        return embedding, None
+
+    async def async_get_embedding(self, text: str) -> list[float]:
+        """
+        Generate embedding asynchronously (Agno interface).
+
+        This method runs the synchronous embedding in a thread pool
+        to provide an async interface for Agno's Knowledge system.
+
+        Parameters
+        ----------
+        text : str
+            Text to embed
+
+        Returns
+        -------
+        list[float]
+            Embedding vector
+
+        Examples
+        --------
+        >>> embedder = LocalEmbedder()
+        >>> embedding = await embedder.async_get_embedding("Hello world")
+
+        """
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            embedding = await loop.run_in_executor(executor, self.embed_text, text)
+        return embedding
+
+    async def async_get_embedding_and_usage(self, text: str) -> tuple[list[float], dict | None]:
+        """
+        Generate embedding asynchronously with usage info (Agno interface).
+
+        This method runs the synchronous embedding in a thread pool
+        to provide an async interface for Agno's Knowledge system.
+        Since sentence-transformers is a local model with no API usage
+        tracking, the usage dict is always None.
+
+        Parameters
+        ----------
+        text : str
+            Text to embed
+
+        Returns
+        -------
+        tuple[list[float], Optional[dict]]
+            Embedding vector and None for usage
+
+        Examples
+        --------
+        >>> embedder = LocalEmbedder()
+        >>> embedding, usage = await embedder.async_get_embedding_and_usage("Hello world")
+        >>> assert usage is None  # Local model has no usage tracking
+
+        """
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            embedding = await loop.run_in_executor(executor, self.embed_text, text)
+        return embedding, None

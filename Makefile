@@ -1,10 +1,18 @@
-.PHONY: help install test lint format clean test-agents serve-ui
+.PHONY: help install test lint format clean test-agents serve-ui dev-frontend dev-backend dev-all stop-all
 
 # Default target
 help:
 	@echo "Case Chat - Makefile Commands"
 	@echo ""
-	@echo "Agent Testing:"
+	@echo "Development (Recommended):"
+	@echo "  make dev-all          Start both backend and frontend"
+	@echo "                       Backend: http://localhost:7777"
+	@echo "                       Frontend: http://localhost:3000"
+	@echo "  make dev-backend      Start backend API only (AgentOS)"
+	@echo "  make dev-frontend     Start Next.js frontend only"
+	@echo "  make stop-all         Stop all running services"
+	@echo ""
+	@echo "Legacy (Old Frontend):"
 	@echo "  make test-agents      Run Case Chat agents locally for testing"
 	@echo "                       Control Plane: http://localhost:7777"
 	@echo "  make serve-ui         Open local web UI in browser (file://)"
@@ -12,11 +20,13 @@ help:
 	@echo ""
 	@echo "Installation:"
 	@echo "  make install          Install all dependencies"
+	@echo "  make install-frontend Install frontend dependencies (pnpm)"
 	@echo ""
 	@echo "Testing & Quality:"
-	@echo "  make test             Run tests"
-	@echo "  make lint             Lint code with ruff"
-	@echo "  make format           Format code with ruff"
+	@echo "  make test             Run backend tests"
+	@echo "  make test-frontend    Run frontend tests"
+	@echo "  make lint             Lint backend code with ruff"
+	@echo "  make format           Format backend code with ruff"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean            Clean cache and build files"
@@ -89,3 +99,49 @@ serve-ui-http:
 	@echo "Backend API: http://localhost:7777"
 	@echo ""
 	@cd frontend && python3 -m http.server 8080
+
+# =============================================================================
+# New Development Commands (agent-ui + AgentOS)
+# =============================================================================
+
+# Install frontend dependencies
+install-frontend:
+	@echo "Installing frontend dependencies..."
+	@cd agent-ui && pnpm install
+
+# Start backend only (AgentOS Control Plane)
+dev-backend:
+	@echo "Starting backend (AgentOS Control Plane)..."
+	@echo ""
+	@echo "Backend API: http://localhost:7777"
+	@echo "API Docs: http://localhost:7777/docs"
+	@echo ""
+	@mkdir -p tmp
+	@uv run python examples/case_chat_agentos_deploy.py
+
+# Start frontend only (agent-ui)
+dev-frontend:
+	@echo "Starting frontend (agent-ui)..."
+	@echo ""
+	@echo "Frontend: http://localhost:3000"
+	@echo ""
+	@echo "Note: Make sure backend is running on http://localhost:7777"
+	@echo ""
+	@cd agent-ui && pnpm dev
+
+# Start both backend and frontend
+dev-all:
+	@echo "Starting backend and frontend..."
+	@./scripts/dev-all.sh
+
+# Stop all running services
+stop-all:
+	@echo "Stopping all services..."
+	@pkill -f "case_chat_agentos_deploy.py" 2>/dev/null || true
+	@pkill -f "next dev" 2>/dev/null || true
+	@echo "All services stopped"
+
+# Run frontend tests
+test-frontend:
+	@echo "Running frontend tests..."
+	@cd agent-ui && pnpm test:run

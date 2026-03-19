@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from agno.agent import Agent
 
+from case_chat.agents.knowledge_base import create_knowledge_tools
 from case_chat.config import get_app_settings
 
 if TYPE_CHECKING:
@@ -117,6 +118,10 @@ class AgentFactory:
         # Create the agent with session history limits
         # num_history_runs=3 limits context to last 3 conversation turns
         # This reduces token usage and improves response time for long conversations
+
+        # Create knowledge tools for RAG with uploaded documents
+        knowledge_tools = create_knowledge_tools()
+
         agent = Agent(
             name="case-chat-assistant",
             model=model,
@@ -126,7 +131,13 @@ class AgentFactory:
                 "Always cite relevant tax laws and regulations when possible.",
                 "If you're unsure about something, acknowledge the limitations.",
                 "Format your responses in markdown for better readability.",
+                "When answering questions, first search the uploaded documents "
+                "for relevant information.",
+                "Use the document search results to provide accurate, citation-backed answers.",
+                "Always include citations from the documents when you use information from them.",
             ],
+            # Attach knowledge tools for RAG
+            tools=[knowledge_tools],
             # Attach database for session persistence
             db=self._session_manager.db,
             # Enable markdown output
