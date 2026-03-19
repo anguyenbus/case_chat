@@ -39,6 +39,10 @@ dependencies = [
     "langchain-text-splitters>=0.0.1",
     # Local embeddings (100% free, no API calls)
     "sentence-transformers>=2.2.0",
+    # Observability and tracing
+    "mlflow>=2.18.0",
+    "opentelemetry-exporter-otlp>=1.27.0",
+    "openinference-instrumentation-agno>=0.1.0",
 ]
 
 [project.optional-dependencies]

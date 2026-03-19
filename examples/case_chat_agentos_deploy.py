@@ -7,12 +7,21 @@ for testing on os.agno.com or via the local control plane at localhost:7777.
 Prerequisites:
 1. uv sync --all-extras --dev
 2. API key configured in .env file (z_api_key)
+3. MLflow server running for tracing (optional but recommended)
 
 Usage:
     # Local testing with control plane at http://localhost:7777
     uv run python examples/case_chat_agentos_deploy.py
 
     # After starting, visit http://localhost:7777 to chat with your agents
+
+MLflow Setup (for tracing):
+    # Start MLflow server
+    mlflow server --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlflow-artifacts
+
+    # Configure .env file
+    MLFLOW_TRACKING_URI=http://localhost:5000
+    MLFLOW_EXPERIMENT_NAME=case-chat-agent
 """
 
 from __future__ import annotations
@@ -60,6 +69,27 @@ def main() -> None:
     )
 
     logger.info("[SETUP] SessionManager initialized: db_path=tmp/case_chat.db")
+
+    # Initialize MLflow tracing
+    try:
+        from case_chat.observability.mlflow_config import (
+            get_mlflow_settings,
+        )
+        from case_chat.observability.mlflow_tracing import (
+            initialize_mlflow_tracing,
+        )
+
+        mlflow_settings = get_mlflow_settings()
+        initialize_mlflow_tracing(mlflow_settings)
+
+        # Log MLflow configuration
+        logger.info("[MLFLOW] MLflow tracing enabled")
+        logger.info("[MLFLOW] View traces: %s/#/experiments/", mlflow_settings.tracking_uri)
+        logger.info("[MLFLOW] Tracing scope: model calls, tools, RAG operations, document uploads")
+
+    except Exception as e:
+        logger.warning("[MLFLOW] MLflow tracing not available: %s", e)
+        logger.info("[MLFLOW] Proceeding without MLflow tracing")
 
     # Create agent factory with session support
     factory = AgentFactory(session_manager=session_manager)

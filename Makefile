@@ -1,4 +1,4 @@
-.PHONY: help install test lint format clean test-agents serve-ui dev-frontend dev-backend dev-all stop-all
+.PHONY: help install test lint format clean test-agents serve-ui dev-frontend dev-backend dev-all stop-all mlflow mlflow-stop dev-all-with-mlflow
 
 # Default target
 help:
@@ -8,6 +8,10 @@ help:
 	@echo "  make dev-all          Start both backend and frontend"
 	@echo "                       Backend: http://localhost:7777"
 	@echo "                       Frontend: http://localhost:3000"
+	@echo "  make dev-all-with-mlflow  Start backend + frontend + MLflow"
+	@echo "                       Backend: http://localhost:7777"
+	@echo "                       Frontend: http://localhost:3000"
+	@echo "                       MLflow UI: http://localhost:5000"
 	@echo "  make dev-backend      Start backend API only (AgentOS)"
 	@echo "  make dev-frontend     Start Next.js frontend only"
 	@echo "  make stop-all         Stop all running services"
@@ -27,6 +31,11 @@ help:
 	@echo "  make test-frontend    Run frontend tests"
 	@echo "  make lint             Lint backend code with ruff"
 	@echo "  make format           Format backend code with ruff"
+	@echo ""
+	@echo "Observability:"
+	@echo "  make mlflow           Start MLflow server for tracing"
+	@echo "                       MLflow UI: http://localhost:5000"
+	@echo "  make mlflow-stop      Stop MLflow server"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean            Clean cache and build files"
@@ -145,3 +154,27 @@ stop-all:
 test-frontend:
 	@echo "Running frontend tests..."
 	@cd agent-ui && pnpm test:run
+
+# =============================================================================
+# MLflow Observability Commands
+# =============================================================================
+
+# Start MLflow server for tracing
+mlflow:
+	@echo "Starting MLflow server for tracing..."
+	@echo ""
+	@echo "MLflow UI: http://localhost:5000"
+	@echo ""
+	@mkdir -p mlflow-artifacts
+	@uv run mlflow server --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlflow-artifacts --host localhost --port 5000
+
+# Stop MLflow server
+mlflow-stop:
+	@echo "Stopping MLflow server..."
+	@pkill -f "mlflow server" 2>/dev/null || true
+	@echo "MLflow server stopped"
+
+# Start everything with MLflow tracing
+dev-all-with-mlflow:
+	@echo "Starting backend + frontend + MLflow..."
+	@./scripts/dev-all-with-mlflow.sh
