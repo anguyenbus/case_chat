@@ -89,6 +89,8 @@ Chat View (document uploaded: Learning The Ropes:  An Introductory Tax Return Ca
 MLflow Tracing Demo:
 ![MLflow Demo](artifacts/mlflow-demo-small.gif)
 
+Watch the full demo video: [MLflow Demo on YouTube](https://youtu.be/-wBxcHSWs8k)
+
 #### Troubleshooting
 
 **Server not running**
