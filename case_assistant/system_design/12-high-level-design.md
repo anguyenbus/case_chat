@@ -21,11 +21,11 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 | Principle | Implementation |
 |-----------|----------------|
 | **Serverless-first** | Lambda for orchestrators, API Gateway for APIs, S3 for storage |
-| **Containers for heavy workloads** | ECS/EKS for VLM+GPU processing, ingestion pipeline |
+| **Kubernetes for workloads** | EKS for VLM+GPU processing, ingestion pipeline, stateful services |
 | **Managed services** | OpenSearch Serverless, DynamoDB, Neptune to reduce operational overhead |
-| **Pay-per-use** | No always-on servers for variable workloads |
-| **Security-first** | VPC isolation, WAF, private endpoints via PrivateLink |
-| **Multi-region capability** | Infrastructure as Code enables regional replication |
+| **Event-driven scaling** | KEDA for Kubernetes pod autoscaling based on queue depth |
+| **Security-first** | VPC isolation, WAF, IRSA for pod identity |
+| **GitOps deployment** | ArgoCD for continuous delivery to EKS clusters |
 
 ---
 
@@ -36,31 +36,35 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 #### Amazon VPC (Virtual Private Cloud)
 - **Purpose**: Network isolation for compute resources
 - **Configuration**: Private subnets only, no public subnets for application workloads
-- **Components**: ALB, ECS/EKS cluster, Lambda in private subnets
-- **Connectivity**: VPC Link for API Gateway → ALB, PrivateLink for AWS services
+- **Components**: ALB, EKS cluster, Lambda in private subnets
+- **Connectivity**: VPC Link for API Gateway → ALB, PrivateLink for AWS services (phase 2+)
 
 #### Application Load Balancer (ALB)
-- **Purpose**: Internal traffic routing to containerized services
+- **Purpose**: Internal traffic routing to Kubernetes services
 - **Features**:
   - Path-based routing (/api/*, /ingest, /health)
-  - Health checks for ECS/EKS pods
+  - Health checks for EKS pods
   - WebSocket support for real-time chat streaming
   - Sticky sessions for conversation continuity
 - **Placement**: Internal VPC, behind API Gateway, accessed via VPC Link
+- **Integration**: Ingress controller (AWS Load Balancer Controller) managing ALB via Ingress resources
 
 #### VPC Link
 - **Purpose**: Private connection from API Gateway to ALB
 - **Type**: Regional VPC Link (NLB/ALB integration)
 - **Benefit**: No internet gateway exposure for internal traffic
 
-#### AWS PrivateLink (VPC Endpoints)
+#### AWS PrivateLink (VPC Endpoints) - Phase 2+
 - **Purpose**: Private connectivity to AWS services without internet gateway
-- **Endpoints**:
-  - S3 (gateway endpoint) - document storage
+- **Phase 1**: Use public endpoints (TLS-encrypted), pods in VPC use NAT Gateway or direct internet access
+- **Phase 2**: Add PrivateLink when traffic exceeds 100 GB/month or compliance requires it
+- **Endpoints** (when added):
+  - S3 (gateway endpoint) - highest priority for document storage
   - DynamoDB (gateway endpoint) - citation and metadata indices
-  - Bedrock (interface endpoint) - LLM and embeddings
-  - OpenSearch Serverless (interface endpoint) - vector search
-- **Cost**: ~$7.30/month per endpoint
+  - Bedrock (interface endpoint) - if compliance requires private ML access
+  - OpenSearch Serverless (interface endpoint) - optional
+- **Cost**: ~$7/month per gateway endpoint, ~$7/month per interface endpoint
+- **ROI**: Cost-effective when exceeding NAT Gateway costs (~$32/month)
 
 ---
 
@@ -113,31 +117,49 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 #### AWS Lambda (Orchestrators)
 - **Purpose**: Event-driven orchestration and lightweight processing
 - **Functions**:
-  - `ingestion-orchestrator` - Triggered by S3 PUT, coordinates document processing
-  - `query-orchestrator` - Coordinates 6-index retrieval pipeline
+  - `ingestion-trigger` - S3 PUT event handler, submits jobs to EKS
   - `session-cleanup` - Scheduled Lambda for TTL expiration
+  - `adhoc-tasks` - Administrative and operational scripts
 - **Runtime**: Python 3.11 with uv package manager
 - **Memory**: 1-2 GB configs based on workload
 - **Timeout**: Up to 15 minutes for ingestion orchestrator
+- **Placement**: Outside VPC for phase 1 (simpler, faster cold starts)
 - **Benefits**: Pay-per-invocation, auto-scaling, no idle costs
 
-#### Amazon ECS (Elastic Container Service)
-- **Purpose**: Container orchestration for stateful services
-- **Engine**: Fargate (serverless containers)
-- **Services**:
-  - Chat Engine Service - Conversation management
-  - Document Ingestion Service - Page processing, chunking
-  - Orchestrator Service - RAG query coordination
-  - Session Manager Service - Session lifecycle
-- **Task Size**: 2-4 vCPU, 4-8 GB RAM per task
-- **Scaling**: Auto-scaling based on CPU/memory or request count
-- **Benefits**: No EC2 management, pay only for running tasks
+#### Amazon EKS (Elastic Kubernetes Service) - Primary Compute
+- **Purpose**: Container orchestration for all application services
+- **Version**: Kubernetes 1.28+ (managed by AWS)
+- **Compute Options**:
+  - **Fargate**: Serverless pods, pay-per-pod-hour, no node management
+  - **Managed Node Groups**: EC2 instances for cost optimization at scale
+- **Services Deployed**:
+  - `chat-engine` - Conversation management, WebSocket handling
+  - `ingestion-service` - Page processing, chunking, VLM routing
+  - `query-orchestrator` - RAG retrieval coordination, 6-index querying
+  - `session-manager` - Session state management
+  - `api-gateway-helper` - JWT validation, rate limiting (pre-auth)
+- **Pod Sizing**:
+  - Chat Engine: 0.5-1 vCPU, 1-2 GB RAM (horizontal pod autoscaling)
+  - Ingestion Service: 2-4 vCPU, 4-8 GB RAM (KEDA scaling based on SQS)
+  - Query Orchestrator: 1-2 vCPU, 2-4 GB RAM (HPA based on CPU/memory)
+  - Session Manager: 0.5 vCPU, 1 GB RAM (minimal footprint)
+- **Scaling**:
+  - **Horizontal Pod Autoscaler (HPA)**: Scale based on CPU/memory metrics
+  - **KEDA (Kubernetes Event-driven Autoscaling)**: Scale based on SQS queue depth, Kafka lag, or other external metrics
+  - **Karpenter**: Node autoscaling - right-size nodes automatically, provision Spot instances, consolidate nodes for efficiency
+- **Ingress**: AWS Load Balancer Controller managing ALB via Ingress resources
+- **Benefits**:
+  - Kubernetes ecosystem and tooling
+  - Declarative configuration via GitOps (ArgoCD)
+  - Advanced networking (Istio service mesh, optional)
+  - Pod-level resource isolation and limits
+  - Mature observability (Prometheus, Grafana, OpenTelemetry)
 
-#### Amazon EKS (Elastic Kubernetes Service) - Optional
-- **Purpose**: Alternative to ECS for complex orchestration needs
-- **Use Case**: If team has Kubernetes expertise, needs advanced features
-- **Node Groups**: Managed node groups or Fargate profiles
-- **Decision**: Start with ECS, migrate to EKS only if needed
+#### IRSA (IAM Roles for Service Accounts)
+- **Purpose**: Pod-level IAM permissions (no shared node credentials)
+- **Usage**: Each service gets its own IAM role via service account annotation
+- **Example**: `ingestion-service` pods assume role with S3, Textract, Bedrock permissions
+- **Benefits**: Least privilege, auditability, no credential management in pods
 
 ---
 
@@ -152,9 +174,9 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
   - `case-assistant-logs` - Application logs (if CloudWatch Logs insufficient)
 - **Features**:
   - S3 Versioning for document history
-  - S3 Event Notifications to trigger Lambda
+  - S3 Event Notifications to trigger Lambda → SQS → EKS scaler
   - S3 Lifecycle policies for tiering to Glacier
-- **Access**: PrivateLink VPC endpoint (no internet gateway)
+- **Access**: Public endpoint (TLS) in phase 1, PrivateLink gateway endpoint in phase 2
 
 ---
 
@@ -169,7 +191,7 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 - **Embedding Model**: Amazon Titan Embeddings v2 (1536 dimensions, 8192 token context)
 - **Search Type**: Vector search (k-NN) + BM25 (keyword) hybrid
 - **Capacity**: Pay-per-search, no provisioning needed
-- **Access**: PrivateLink VPC endpoint
+- **Access**: Public endpoint (TLS) in phase 1, VPC interface endpoint in phase 2
 
 #### Amazon DynamoDB
 - **Purpose**: NoSQL database for exact-match lookups
@@ -183,7 +205,7 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
   - Global Tables for multi-region (future)
   - TTL for automatic expiration (7-day inactivity)
   - PartiQL for SQL-like queries
-- **Access**: PrivateLink VPC endpoint
+- **Access**: Public endpoint (TLS) in phase 1, VPC gateway endpoint in phase 2
 
 #### Amazon Neptune
 - **Purpose**: Graph database for citation cross-references
@@ -192,7 +214,7 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
   - Edges: `references`, `defines`, `cites`, `contradicts`
   - Traversals: Expand related citations during retrieval
 - **Edition**: Neptune Serverless (pay-per-query)
-- **Access**: PrivateLink VPC endpoint
+- **Access**: Public endpoint (TLS) in phase 1, VPC interface endpoint in phase 2
 - **Use Case**: Cross-reference expansion in retrieval step 8
 
 ---
@@ -211,7 +233,7 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
   - On-demand throughput
   - Guardrails for content filtering (optional)
 - **Pricing**: Pay-per-token/input-output
-- **Access**: PrivateLink VPC endpoint
+- **Access**: Public endpoint (TLS) in phase 1, VPC interface endpoint in phase 2 if compliance requires
 
 #### AWS Textract
 - **Purpose**: OCR and document text extraction
@@ -259,40 +281,57 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 #### Amazon CloudWatch
 - **Purpose**: Metrics, logs, and alarms
 - **Components**:
-  - **CloudWatch Logs** - Application logs from Lambda, ECS
-  - **CloudWatch Metrics** - CPU, memory, request counts, latency
-  - **CloudWatch Alarms** - Auto-scaling triggers, alerting
+  - **CloudWatch Logs** - Application logs from Lambda, EKS pods via Fluent Bit
+  - **CloudWatch Metrics** - CPU, memory, request counts, latency, pod counts
+  - **CloudWatch Alarms** - HPA/KEDA triggers, alerting, cluster health
 - **Dashboards**:
   - System overview (requests/sec, error rate, latency)
-  - Cost monitoring (per-service spend)
+  - Cost monitoring (per-service spend, pod costs)
   - RAG pipeline metrics (retrieval latency, index sizes)
+  - Cluster health (node status, pod health, resource utilization)
 
 #### AWS X-Ray
 - **Purpose**: Distributed tracing for microservices
 - **Tracing Flow**:
-  - API Gateway → Lambda/ECS → DynamoDB/OpenSearch/Bedrock
+  - API Gateway → Lambda/EKS pods → DynamoDB/OpenSearch/Bedrock
   - End-to-end request latency breakdown
   - Performance bottleneck identification
+  - Pod-to-service dependency mapping
 
 ---
 
 ### 2.10 Deployment & DevOps Layer
 
 #### AWS ECR (Elastic Container Registry)
-- **Purpose**: Docker image storage for ECS/EKS
+- **Purpose**: Docker image storage for EKS deployments
 - **Repositories**:
   - `case-assistant-chat-engine`
   - `case-assistant-ingestion`
-  - `case-assistant-orchestrator`
+  - `case-assistant-query-orchestrator`
+  - `case-assistant-session-manager`
 - **Features**:
-  - Image scanning for vulnerabilities
+  - Image scanning for vulnerabilities (ECS scan leverages for EKS)
   - Lifecycle policies for old image cleanup
+  - Immutable tags for production releases
 
 #### AWS CloudFormation / Terraform
 - **Purpose**: Infrastructure as Code (IaC)
 - **Recommendation**: Terraform for multi-cloud support
-- **State**: S3 backend for Terraform state
+- **State**: S3 backend for Terraform state with DynamoDB locking
 - **Modules**: Reusable components per service layer
+- **Kubernetes Tools**:
+  - **Helm**: Package manager for EKS applications
+  - **ArgoCD**: GitOps continuous delivery
+  - **kubectl**: Direct cluster operations (debugging)
+
+#### ArgoCD (GitOps)
+- **Purpose**: Continuous delivery to EKS
+- **Workflow**:
+  1. Push Helm charts/manifests to Git repository
+  2. ArgoCD detects changes and syncs to EKS
+  3. Automated rollouts with health checks
+  4. Rollback on failure
+- **Benefits**: Declarative configuration, audit trail, self-healing
 
 #### AWS CodePipeline / CodeBuild
 - **Purpose**: CI/CD pipeline
@@ -364,21 +403,53 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 - Container health checks for reliability
 - Path-based routing to microservices
 
-### 3.4 Why ECS Fargate vs. EC2?
+### 3.4 Why EKS vs ECS?
 
-| Factor | ECS Fargate | EC2 |
-|--------|-------------|-----|
-| **Management** | No server management | OS patching, maintenance |
-| **Scaling** | Automatic task scaling | Manual ASG configuration |
-| **Cost** | Pay-per-task, premium | Pay-per-instance |
-| **Isolation** | Native container isolation | Shared instances |
+| Factor | EKS | ECS Fargate |
+|--------|-----|-------------|
+| **Management** | Kubernetes control plane managed by AWS | Fully managed, no control plane |
+| **Scaling** | HPA + KEDA for event-driven scaling | Service auto-scaling based on CPU/memory |
+| **Ecosystem** | Rich Kubernetes ecosystem (Istio, Prometheus, etc.) | AWS-specific, limited ecosystem |
+| **Portability** | Multi-cloud, runs anywhere | AWS-specific, lock-in |
+| **Learning Curve** | Steeper (Kubernetes expertise required) | Easier, simpler model |
+| **Cost** | Control plane: $72/month, plus compute | $0.005/vCPU-hour Fargate premium |
+| **Complexity** | Higher (more moving parts) | Lower (simpler architecture) |
+| **Maturity** | Kubernetes is industry standard | AWS-optimized, mature |
 
-**Decision**: **ECS Fargate** for Case Assistant due to:
-- No EC2 management overhead
-- Pay only for running tasks
-- Automatic scaling based on demand
+**Decision**: **EKS** for Case Assistant due to:
+- Team has Kubernetes expertise (or willing to learn)
+- Rich ecosystem for observability (OpenTelemetry, Prometheus, Grafana)
+- Service mesh capability (Istio) for advanced traffic management
+- KEDA for event-driven autoscaling (SQS queue depth → pod count)
+- Future-proofing with standard Kubernetes skills
+- Portability if multi-cloud strategy emerges
 
-### 3.5 Why Neptune vs. DynamoDB Graph?
+**When to choose ECS instead**:
+- Team prefers simpler AWS-native approach
+- No need for Kubernetes ecosystem
+- Want lowest operational complexity
+- Small team with limited Kubernetes experience
+
+### 3.5 Why Karpenter vs Cluster Autoscaler?
+
+| Factor | Karpenter | Cluster Autoscaler |
+|--------|-----------|-------------------|
+| **Node Provisioning** | Creates right-sized nodes for workload | Uses ASG to scale node groups |
+| **Consolidation** | Actively consolidates underutilized nodes | Scales down when pods below threshold |
+| **Spot Instances** | Native Spot support, automatic fallback | Manual Spot configuration |
+| **Node Types** | Dynamically selects optimal instance types | Predefined node groups |
+| **Graceful Shutdown** | Respects Pod Disruption Budgets | Basic cordon/drain |
+| **Cost** | Open source, pay for EC2 only | Open source, pay for EC2 only |
+| **Setup** | Provisioner + CRDs | Deployment per node group |
+
+**Decision**: **Karpenter** for Case Assistant due to:
+- Automatic instance type selection for optimal cost/performance
+- Native Spot instance support with fallback to On-Demand
+- Better node consolidation reduces waste
+- Single deployment vs multiple Cluster Autoscaler deployments
+- Future-proof with AWS-backed development
+
+### 3.6 Why Neptune vs. DynamoDB Graph?
 
 | Factor | Neptune | DynamoDB Graph |
 |--------|---------|----------------|
@@ -399,41 +470,42 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 ### 4.1 Synchronous Request/Response
 
 ```
-User → API Gateway → ALB → ECS → Bedrock
+User → API Gateway → ALB → EKS Pods → Bedrock
 ```
 
 **Use Case**: Chat query requiring immediate response
-**Services**: API Gateway, ALB, ECS, Bedrock
+**Services**: API Gateway, ALB, EKS (query-orchestrator pods), Bedrock
 **Timeout**: 30 seconds (API Gateway limit)
 **Latency**: 1-2 seconds end-to-end
 
 ### 4.2 Asynchronous Event-Driven
 
 ```
-S3 Upload → EventBridge → Lambda → SQS → Lambda
+S3 Upload → EventBridge → Lambda → SQS → KEDA → EKS Pods (ingestion-service)
 ```
 
 **Use Case**: Document ingestion (long-running process)
-**Services**: S3, EventBridge, Lambda, SQS
-**Benefits**: Decoupling, retry logic, no user wait
+**Services**: S3, EventBridge, Lambda, SQS, KEDA scaler, EKS
+**Benefits**: Decoupling, retry logic, no user wait, KEDA scales pods based on queue depth
 
 ### 4.3 VPC Link (Private Integration)
 
 ```
-API Gateway → VPC Link → ALB → ECS
+API Gateway → VPC Link → ALB → EKS Pods
 ```
 
 **Use Case**: Public API to private VPC resources
-**Benefits**: No internet gateway, private network, security
+**Benefits**: No internet gateway exposure, private network, security
 
-### 4.4 PrivateLink (Private Service Access)
+### 4.4 PrivateLink (Private Service Access) - Phase 2
 
 ```
-ECS → VPC Endpoint → S3/DynamoDB/Bedrock
+EKS Pods → VPC Endpoint → S3/DynamoDB/Bedrock
 ```
 
-**Use Case**: Private access to AWS services
-**Benefits**: No NAT gateway, lower latency, enhanced security
+**Use Case**: Private access to AWS services when compliance requires
+**Benefits**: No NAT gateway traffic, lower latency, enhanced security
+**Phase**: Add in phase 2 when traffic exceeds 100 GB/month
 
 ---
 
@@ -454,8 +526,9 @@ ECS → VPC Endpoint → S3/DynamoDB/Bedrock
 | Service | Pricing Model | Optimization |
 |---------|---------------|--------------|
 | **ALB** | Per hour + LCU | Use path-based routing efficiently |
-| **ECS Fargate** | Per vCPU + GB per hour | Auto-scale to zero when idle |
-| **PrivateLink** | Per endpoint hour + data transfer | Only for high-volume services |
+| **EKS Control Plane** | $72/month (fixed) | Shared across all clusters in region |
+| **EKS Compute** | Per vCPU + GB per hour (Fargate) or EC2 pricing (managed nodes) | Right-size pod requests, use Spot for non-critical workloads |
+| **PrivateLink** | Per endpoint hour + data transfer | Only for high-volume services (phase 2) |
 
 ### 5.3 Cost-Saving Strategies
 
@@ -463,8 +536,15 @@ ECS → VPC Endpoint → S3/DynamoDB/Bedrock
 2. **DynamoDB TTL**: Auto-expire sessions and old data
 3. **Lambda Reserved Concurrency**: Prevent runaway costs
 4. **S3 Lifecycle Policies**: Delete processed raw documents after 30 days
-5. **Bedroid On-Demand**: No provisioning, pay-per-token
-6. **Spot Instances for EKS**: If using EKS, use Spot for non-critical workloads
+5. **Bedrock On-Demand**: No provisioning, pay-per-token
+6. **Karpenter Benefits**:
+   - Right-size EKS nodes automatically (e.g., use m5.large instead of m5.xlarge when appropriate)
+   - Use Spot instances for non-critical workloads (60-90% savings vs On-Demand)
+   - Consolidate underutilized nodes to reduce waste
+   - Eliminate over-provisioned node groups
+7. **KEDA**: Scale ingestion pods to zero when idle, scale based on SQS queue depth
+8. **HPA Right-Sizing**: Set appropriate pod resource requests/limits based on actual usage
+9. **Fargate Spot** (if using Fargate): Up to 70% savings for fault-tolerant workloads
 
 ### 5.4 Estimated Monthly Costs (Phase 1, Moderate Traffic)
 
@@ -473,7 +553,9 @@ ECS → VPC Endpoint → S3/DynamoDB/Bedrock
 | **Lambda** | $50-100 |
 | **API Gateway** | $30-50 |
 | **ALB** | $20-30 |
-| **ECS Fargate** | $100-200 |
+| **EKS Control Plane** | $72 (fixed) |
+| **EKS Compute** (Fargate or Managed Nodes) | $150-300 |
+| **KEDA** | $0 (open source) |
 | **OpenSearch Serverless** | $150-300 |
 | **DynamoDB** | $50-100 |
 | **Neptune Serverless** | $100-200 |
@@ -481,10 +563,11 @@ ECS → VPC Endpoint → S3/DynamoDB/Bedrock
 | **Bedrock** | $200-500 |
 | **Textract** | $50-100 |
 | **WAF** | $15-20 |
-| **PrivateLink** | $30-50 |
 | **CloudWatch** | $20-50 |
-| **Other** | $50-100 |
-| **Total** | **~$900-2,000/month** |
+| **Other** (ECR, data transfer) | $50-100 |
+| **Total** | **~$1,000-2,100/month** |
+
+**Note**: EKS control plane ($72/month) is additional overhead vs ECS, but enables richer Kubernetes ecosystem
 
 ---
 
@@ -493,7 +576,7 @@ ECS → VPC Endpoint → S3/DynamoDB/Bedrock
 ### 6.1 Defense in Depth
 
 ```
-User → Azure AD → WAF → API Gateway (JWT) → VPC → ALB → ECS
+User → Azure AD → WAF → API Gateway (JWT) → VPC → ALB → EKS Pods
                     ↓         ↓            ↓
                  Network   Application  Infrastructure
                   Layer      Layer        Layer
@@ -501,19 +584,21 @@ User → Azure AD → WAF → API Gateway (JWT) → VPC → ALB → ECS
 
 ### 6.2 Network Security
 
-- **VPC**: Private subnets only, no direct internet access
-- **Security Groups**: Restrictive rules, only allow necessary traffic
-- **NACLs**: Additional network-level controls
-- **VPC Endpoints**: Private access to AWS services (no NAT gateway)
+- **VPC**: Private subnets only, no direct internet access for pods
+- **Security Groups**: Restrictive rules, only allow necessary traffic (ALB → pods, pods → AWS services)
+- **NACLs**: Additional network-level controls for subnet boundaries
+- **VPC Endpoints**: Phase 1: Public endpoints with TLS. Phase 2: Private endpoints for S3, DynamoDB, Bedrock
 - **WAF**: Web exploit protection at API Gateway
+- **Network Policies**: Calico or Cilium for pod-to-pod traffic control (optional, phase 2)
 
 ### 6.3 Identity & Access Management
 
 - **Azure AD**: External identity provider
 - **JWT Tokens**: Validated by API Gateway authorizer
-- **IAM Roles**: Least privilege for Lambda, ECS, Bedrock access
-- **Secrets Manager**: Store API keys, credentials
-- **KMS**: Encryption at rest for sensitive data
+- **IRSA (IAM Roles for Service Accounts)**: Pod-level IAM permissions, no shared credentials
+- **Service Account Annotations**: Each EKS service gets its own IAM role
+- **Secrets Manager**: Store API keys, credentials, injected via CSI driver or environment variables
+- **KMS**: Encryption at rest for sensitive data, EKS uses AWS-managed keys for etcd
 
 ### 6.4 Data Protection
 
@@ -562,8 +647,8 @@ User → Azure AD → WAF → API Gateway (JWT) → VPC → ALB → ECS
 | **ALB** | Blue/Grey | Internal VPC, behind API Gateway |
 | **WAF** | Orange/Red | In front of API Gateway |
 | **Lambda** | Orange | Event-driven orchestrators |
-| **ECS** | Orange | Containerized services |
-| **EKS** | Orange | Alternative to ECS |
+| **EKS** | Orange | Primary: Containerized services |
+| **ECS** | Orange | Alternative: If simpler AWS-native approach preferred |
 | **S3** | Green | Document storage |
 | **DynamoDB** | Blue/Green | NoSQL database |
 | **OpenSearch** | Orange/Blue | Vector and keyword search |
@@ -574,10 +659,11 @@ User → Azure AD → WAF → API Gateway (JWT) → VPC → ALB → ECS
 | **CloudWatch** | Orange/Yellow | Monitoring and logging |
 | **X-Ray** | Purple/Pink | Distributed tracing |
 | **VPC** | Orange/Brown | Network isolation |
-| **PrivateLink** | Orange/Brown | VPC endpoints |
+| **PrivateLink** | Orange/Brown | VPC endpoints (phase 2) |
 | **CloudFront** | Orange/Grey | CDN (optional) |
 | **ECR** | Orange | Container registry |
-| **WAF** | Orange/Red | Web application firewall |
+| **Karpenter** | Orange | Node autoscaling (Kubernetes) |
+| **ArgoCD** | Purple | GitOps continuous delivery |
 
 ---
 
