@@ -1,7 +1,7 @@
 # User Stories - Case Assistant Chat
 
 **Domain**: Australian Taxation Law (100% Focus)
-**Document Version**: 1.2.0
+**Document Version**: 1.3.0
 **Date**: 2026-03-25
 **Status**: Product Requirements
 **Audience**: Product Managers, Engineering, QA Teams
@@ -19,6 +19,8 @@
 - [User Story 1.4: Table Extraction](#user-story-14-table-extraction)
 - [Acceptance Criteria Summary](#acceptance-criteria-summary)
 - [2.2 Multi-Index Chunking Strategy](#22-multi-index-chunking-strategy)
+  - [Retrieval Flow Detailed Explanation](#retrieval-flow-detailed-explanation)
+- [Quality Metrics](#quality-metrics)
 
 ---
 
@@ -307,6 +309,7 @@
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.3.0 | 2026-03-25 | Added comprehensive retrieval flow explanation with step-by-step walkthrough of multi-index query processing |
 | 1.2.0 | 2026-03-25 | Updated chunking strategy to multi-index architecture (6 specialized indices for different AI workflow stages) |
 | 1.1.0 | 2026-03-25 | Updated for Australian taxation context (ITAA, ATO rulings, AAT decisions, Australian legal citations) |
 | 1.0.0 | 2026-03-25 | Initial user story documentation for Case Assistant Chat |
@@ -690,6 +693,587 @@ Path 6 - Cross-Reference Index:
 9. **LLM Generation**: Generate response with full context (1500ms)
 
 **Total Latency**: ~1.9 seconds (vs. 3.5s with single-index approach)
+
+---
+
+### Retrieval Flow Detailed Explanation
+
+This section provides a comprehensive walkthrough of how the multi-index retrieval architecture processes a user query through all 6 specialized indices.
+
+#### The User's Query
+
+```
+"What are the penalties for late BAS lodgment under Section 288-95?"
+```
+
+**Query Analysis**:
+- **Core concept**: Penalties (the primary topic)
+- **Specific context**: Late BAS lodgment (Business Activity Statement)
+- **Legal reference**: Section 288-95 of ITAA 1997 (Income Tax Assessment Act)
+
+**Why this query challenges simple search**:
+- Requires **exact legal citation** matching ("Section 288-95")
+- Requires **conceptual understanding** of penalties and lodgment
+- Requires **tax terminology** knowledge ("BAS" = "Business Activity Statement")
+- Requires **complete legal context** (full provision text with subsections)
+
+---
+
+#### Step 1: Metadata Index (10ms)
+
+**Purpose**: Filter the entire corpus to relevant documents before searching
+
+**Process**:
+
+```
+ALL DOCUMENTS (500,000 chunks across 10,000 documents)
+         ↓
+    Filter by:
+    - Status: "active" only
+    - Document type: "tax_legislation"
+    - Jurisdiction: "federal"
+    - Act: "ITAA 1997"
+         ↓
+RELEVANT SUBSET (15,000 chunks across 50 ITAA 1997 documents)
+```
+
+**Why this matters**:
+- **Without filtering**: Would search ALL 500K chunks (slow, expensive)
+- **With filtering**: Only search 15K relevant chunks (fast, precise)
+- **Analogy**: Like filtering a library to only tax law books before searching
+
+**Result**: Search space reduced by 97% (500K → 15K chunks)
+
+---
+
+#### Step 2: Citation Index (5ms)
+
+**Purpose**: Exact match lookup for "Section 288-95"
+
+**Process**:
+
+```
+CITATION DATABASE (DynamoDB - Key-Value Store)
+├── Key: "Section 288-95"
+├── Aliases: ["s288-95", "sec 288-95", "ITAA 1997 s 288-95"]
+└── Location: ITAA 1997, page 245, chunks 3-5
+
+EXACT MATCH FOUND: ✅
+- Document: ITAA 1997
+- Section: 288-95
+- Chunk IDs: [itaa1997_s288-95_chunk1, chunk2, chunk3]
+- Status: Active
+- Effective Date: 2013-06-28
+```
+
+**Why semantic search would fail here**:
+
+| Approach | Result | Problem |
+|----------|--------|---------|
+| **Semantic Search** | Returns Section 12-35, Section 6-5, Section 288-90 | Treats "288-95" as generic numbers, not a legal identifier |
+| **Citation Index** | Returns ONLY Section 288-95 of ITAA 1997 | Exact string match = 100% precision |
+
+**Key insight**: Legal citations are identifiers, not semantic concepts. "Section 288-95" should not match "Section 6-5" even though both are "section numbers."
+
+---
+
+#### Step 3: Semantic Index (80ms)
+
+**Purpose**: Vector search for concepts related to the query
+
+**Process**:
+
+```
+QUERY EMBEDDING:
+"What are the penalties for late BAS lodgment"
+    ↓
+Convert to vector: [0.123, -0.456, 0.789, ...] (1536 dimensions)
+    ↓ (Amazon Titan Embeddings v2)
+Search in vector database for similar chunks
+
+TOP 20 CHILD CHUNKS RETURNED:
+1. Chunk about "penalty amounts" (similarity: 0.89)
+2. Chunk about "late lodgment offences" (similarity: 0.87)
+3. Chunk about "due date requirements" (similarity: 0.85)
+4. Chunk about "penalty unit calculations" (similarity: 0.83)
+5. Chunk about "small business entity penalties" (similarity: 0.81)
+...
+20. Chunk about "reasonable excuses" (similarity: 0.72)
+```
+
+**Example child chunk (400 tokens)**:
+
+```
+"A penalty of 210 penalty units applies to entities that fail to
+lodge their activity statement by the due date. Each 28-day
+period (or part thereof) constitutes a separate offence. The
+penalty amount varies based on whether the entity is a small
+business entity."
+```
+
+**Why semantic search matters**:
+- Finds **conceptually related content** even when exact words don't match
+- "penalties" ↔ "sanctions", "fines", "consequences"
+- "late lodgment" ↔ "after due date", "delayed filing", "non-compliance"
+- **Small chunks (300-500 tokens)** = better semantic precision than large chunks
+
+---
+
+#### Step 4: Keyword Index (40ms)
+
+**Purpose**: BM25 search for exact tax terms
+
+**Process**:
+
+```
+BM25 KEYWORD SEARCH (OpenSearch with tax law analyzer):
+Query terms: ["penalty", "units", "BAS", "due", "date"]
+
+TOP 15 CHUNKS RETURNED:
+1. Chunk with exact phrase "210 penalty units" (BM25 score: 12.5)
+2. Chunk with "activity statement" and "due date" (BM25 score: 11.8)
+3. Chunk with "28-day period" and "offence" (BM25 score: 10.9)
+4. Chunk with all 5 terms present (BM25 score: 15.2)
+5. Chunk with "small business entity" (BM25 score: 9.7)
+...
+15. Chunk with "penalty" and "late" (BM25 score: 8.7)
+```
+
+**Why keyword search is critical for tax law**:
+
+| Tax Term | Semantic Match | Keyword Match | Why Keyword Wins |
+|----------|---------------|---------------|------------------|
+| "210 penalty units" | Generic "penalty amounts" | Exact "210 penalty units" | Exact threshold matters |
+| "BAS" | "activity statement" | "BAS" | Legal terminology precision |
+| "28-day period" | "about a month" | "28-day period" | Legal timeframe exactness |
+| "shall" | "must", "required" | "shall" | Legal imperative language |
+
+**Key insight**: Tax law requires precision. "210 penalty units" is not semantically similar to "100 penalty units" - they are legally distinct.
+
+---
+
+#### Step 5: Result Fusion - Reciprocal Rank Fusion (5ms)
+
+**Purpose**: Combine semantic and keyword results intelligently
+
+**Process**:
+
+```
+SEMANTIC RESULTS (20 chunks):
+  [chunk_A (rank 1), chunk_B (rank 2), chunk_C (rank 3), ...]
+
+KEYWORD RESULTS (15 chunks):
+  [chunk_B (rank 1), chunk_D (rank 2), chunk_A (rank 5), ...]
+
+RECIPROCAL RANK FUSION ALGORITHM:
+  For each unique chunk:
+    score = 1/(semantic_rank + k) + 1/(keyword_rank + k)
+    where k = 60 (default constant)
+
+  Example calculations:
+    chunk_A: 1/(1+60) + 1/(5+60) = 0.0164 + 0.0154 = 0.0318
+    chunk_B: 1/(2+60) + 1/(1+60) = 0.0159 + 0.0164 = 0.0323 ✅ (highest)
+    chunk_C: 1/(3+60) + ∞ (not in keyword) = 0.0154
+    chunk_D: ∞ (not in semantic) + 1/(2+60) = 0.0159
+
+FUSED RESULTS (25 unique chunks):
+  1. chunk_B (appears in both, high combined rank)
+  2. chunk_A (appears in both, high combined rank)
+  3. chunk_C (semantic only, high semantic rank)
+  4. chunk_D (keyword only, high keyword rank)
+  ...
+  25. chunk_Z (lower combined rank)
+```
+
+**Why RRF works better than simple ranking**:
+
+| Approach | Problem | Solution |
+|----------|---------|----------|
+| **Semantic-only** | Misses exact term matches | Add keyword results |
+| **Keyword-only** | Misses conceptual relationships | Add semantic results |
+| **Simple concatenation** | Keyword results dominated | RRF balances both |
+| **RRF fusion** | Proven algorithm for ranked lists | Industry best practice |
+
+**Result**: 25 unique child chunks, ranked by combined semantic + keyword relevance
+
+---
+
+#### Step 6: Context Index (30ms)
+
+**Purpose**: Fetch parent chunks for full legal context
+
+**Process**:
+
+```
+25 CHILD CHUNKS (300-500 tokens each):
+  - chunk_1: "A penalty of 210 penalty units applies..."
+  - chunk_2: "Each 28-day period constitutes a separate offence..."
+  - chunk_3: "The Commissioner may remit the penalty..."
+  - chunk_4: "For the purposes of this section..."
+  - chunk_5: "Small business entity penalty is 210 units..."
+  - ... (20 more child chunks)
+
+EXPAND TO PARENT CHUNKS:
+  chunk_1 + chunk_2 + chunk_3 → Parent chunk A (full section 288-95)
+  chunk_4 + chunk_5 → Parent chunk B (definition section)
+  chunk_6 + chunk_7 + chunk_8 → Parent chunk C (related provision)
+
+12 PARENT CHUNKS FETCHED (1500-2500 tokens each):
+  - Parent chunk A: Complete Section 288-95 with all subsections
+  - Parent chunk B: Definition of "penalty unit" from s 995-1
+  - Parent chunk C: Related provisions on penalty remission
+  - ... (9 more parent chunks)
+```
+
+**Example: Why parent chunks matter**
+
+**Child chunk alone** (insufficient):
+```
+"A penalty of 210 penalty units applies to entities that fail to
+lodge their activity statement by the due date."
+```
+→ LLM questions: To whom? When? Are there exceptions? What's the penalty amount?
+
+**Parent chunk** (complete):
+```
+SECTION 288-95 Failure to lodge activity statement on time
+
+(1) An entity that fails to lodge an activity statement by the
+    due date is liable to a penalty.
+
+(2) The penalty is:
+    (a) 210 penalty units if the entity is a small business entity; or
+    (b) 1050 penalty units otherwise.
+
+(3) For the purposes of this section:
+    (a) treat each 28 days (or part thereof) after the due date as a
+        separate offence; and
+    (b) disregard any period during which the entity has a reasonable excuse.
+
+(4) The Commissioner may remit the penalty in whole or in part.
+```
+→ LLM has complete context: Who, when, how much, exceptions, discretion
+
+**Key insight**: Small chunks for search precision, large chunks for answer completeness.
+
+---
+
+#### Step 7: Cross-Reference Index (20ms)
+
+**Purpose**: Follow citation links to related content
+
+**Process**:
+
+```
+PARENT CHUNK A (Section 288-95) CONTAINS CITATIONS:
+  - "penalty unit" → defined in Section 995-1
+  - "small business entity" → defined in Section 995-1
+  - "Commissioner" → defined in Section 995-1
+  - "reasonable excuse" → case law: FCT v. Ryan (2000)
+
+CITATION GRAPH TRAVERSAL (Neptune Graph Database):
+  Section 288-95
+    → cites: s 995-1 (definitions)
+    → cites: s 288-90 (related penalty provisions)
+    → cites: FCT v. Ryan (precedent on reasonable excuse)
+
++3 CHUNKS ADDED TO CONTEXT:
+  - Definition of "penalty unit" (s 995-1)
+  - Definition of "small business entity" (s 995-1)
+  - Case excerpt: FCT v. Ryan on "reasonable excuse"
+```
+
+**Why citation expansion matters**:
+
+**Without expansion** (incomplete answer):
+```
+Q: "What is 210 penalty units in dollars?"
+A: "The penalty is 210 penalty units." (user unsatisfied)
+```
+
+**With expansion** (complete answer):
+```
+Q: "What is 210 penalty units in dollars?"
+A: "The penalty is 210 penalty units. One penalty unit equals $222
+   (as of 2024), so 210 units = $46,620. [s 995-1]" (user satisfied)
+```
+
+**Key insight**: Tax law is highly interconnected. Citations provide essential context.
+
+---
+
+#### Step 8: Reranking (200ms)
+
+**Purpose**: LLM reranks top chunks by query relevance
+
+**Process**:
+
+```
+INPUT TO RERANKER (Claude 3 Haiku - fast, cost-effective):
+  - Query: "What are the penalties for late BAS lodgment under Section 288-95?"
+  - 28 chunks total:
+    • 25 fused child chunks (semantic + keyword)
+    • 12 parent chunks (full context)
+    • +3 citation expansion chunks
+    = 40 unique chunks (some duplicates removed)
+
+RERANKING SCORING FACTORS:
+  1. Semantic alignment with query intent
+  2. Contains exact citation (Section 288-95) → BOOST
+  3. Contains penalty amounts → BOOST
+  4. Provides complete legal context → BOOST
+  5. Definitions and examples included → BOOST
+  6. Hierarchical relevance (section > example > commentary)
+
+OUTPUT (Top 5 chunks):
+  1. Parent chunk: Complete Section 288-95 (score: 0.95)
+  2. Child chunk: Penalty amount calculation (score: 0.92)
+  3. Child chunk: 28-day period rule (score: 0.89)
+  4. Definition chunk: Penalty unit definition (score: 0.85)
+  5. Case chunk: Reasonable excuse precedent (score: 0.82)
+```
+
+**Why reranking improves quality**:
+
+| Approach | Problem | Reranking Solution |
+|----------|---------|-------------------|
+| **Vector search** | Semantic similarity ≠ legal relevance | LLM understands query intent |
+| **BM25 search** | Exact terms ≠ legal hierarchy | LLM ranks section > commentary |
+| **Combined scores** | Mathematical formula lacks nuance | LLM understands legal reasoning |
+
+**Example reranking decision**:
+
+```
+Chunk A: "Penalty of 210 units for late lodgment" (vector: 0.92)
+Chunk B: "Complete Section 288-95 with all subsections" (vector: 0.88)
+
+Vector search ranks: A > B (semantic similarity)
+Reranking ranks: B > A (legal completeness)
+
+Reasoning: Chunk B provides complete legal context, which is more
+           valuable for answering the user's question accurately.
+```
+
+---
+
+#### Step 9: LLM Generation (1500ms)
+
+**Purpose**: Generate final response with citations
+
+**Process**:
+
+```
+INPUT TO LLM (Claude 3 Sonnet):
+  - Query: "What are the penalties for late BAS lodgment under Section 288-95?"
+  - Context: Top 5 chunks (~12,500 tokens total)
+    1. Complete Section 288-95 (all subsections)
+    2. Penalty calculation details
+    3. 28-day period rules
+    4. Penalty unit definition
+    5. Case law on reasonable excuses
+  - System prompt: "You are an Australian tax law AI assistant.
+                   Always cite sources accurately. Use plain English
+                   while preserving legal precision."
+
+OUTPUT (streamed to user):
+
+Under Section 288-95 of the Income Tax Assessment Act 1997, a penalty
+of 210 penalty units applies to entities that fail to lodge their
+activity statement by the due date [ITAA 1997 s 288-95(1)].
+
+**Penalty Amounts**
+
+The penalty amount depends on the entity type:
+• Small business entities: 210 penalty units ($46,620)
+• Other entities: 1,050 penalty units ($233,100)
+
+[s 288-95(2); s 995-1 (penalty unit definition)]
+
+**How Penalties Apply**
+
+Each 28-day period (or part thereof) after the due date constitutes a
+separate offence [s 288-95(3)(a)]. This means if you lodge 3 months
+late, you could face penalties for 3 separate periods.
+
+However, periods during which the entity has a reasonable excuse are
+disregarded [s 288-95(3)(b)]. For example, in FCT v. Ryan (2000),
+illness was accepted as a reasonable excuse for late lodgment.
+
+**Commissioner Discretion**
+
+The Commissioner has discretion to remit the penalty in whole or in
+part [s 288-95(4)]. If you have a reasonable excuse for late lodgment,
+you may request remission.
+
+---
+*Note: One penalty unit = $222 (as of 2024). Penalty amounts are
+adjusted annually. [s 995-1]*
+
+*Disclaimer: This information is for educational purposes and does not
+constitute legal or tax advice.*
+```
+
+**Why the response works well**:
+- ✅ **Complete context**: All subsections included
+- ✅ **Accurate citations**: Every claim sourced
+- ✅ **Helpful explanation**: Legal text → plain English
+- ✅ **Legal precision**: Important nuances preserved (discretion, exceptions)
+- ✅ **Practical examples**: Monetary calculations provided
+- ✅ **Case law**: Precedent cited for "reasonable excuse"
+
+---
+
+#### Single-Index vs Multi-Index Comparison
+
+**Single-Index Approach** (what would happen):
+
+```
+QUERY: "What are the penalties for late BAS lodgment under Section 288-95?"
+
+SINGLE VECTOR INDEX SEARCH:
+  - Query embedding: [0.123, -0.456, ...]
+  - Search: 500,000 chunks
+  - Results: 50 chunks of varying relevance
+
+PROBLEMS:
+  1. ❌ No exact citation match
+     → Returns Section 6-5, Section 12-35, Section 288-90
+     → User gets wrong section information
+
+  2. ❌ Chunks are too large (1500-2500 tokens)
+     → Vector embedding averages across entire section
+     → Loses semantic precision
+     → Query matches diluted
+
+  3. ❌ No keyword exact match
+     → "210 penalty units" treated as semantic concept
+     → Misses exact threshold matching
+
+  4. ❌ No citation expansion
+     → Missing definitions
+     → Incomplete answer
+
+  5. ❌ No reranking
+     → Vector similarity ≠ legal relevance
+     → Irrelevant chunks included in LLM context
+
+  6. ❌ Context window overwhelmed
+     → 50 chunks × 2000 tokens = 100,000 tokens
+     → LLM context exceeded
+     → Truncated, incomplete answer
+
+RESULT:
+  - Response time: 3.5 seconds
+  - Citation accuracy: 71%
+  - Retrieval precision: 62%
+  - User satisfaction: Low
+```
+
+**Multi-Index Approach** (what we built):
+
+```
+MULTI-INDEX PIPELINE:
+  ✅ Citation Index: Exact Section 288-95 match
+  ✅ Semantic Index: Conceptual matching (small chunks)
+  ✅ Keyword Index: Exact term matching
+  ✅ Context Index: Complete legal provisions
+  ✅ Cross-Reference Index: Definitions and precedents
+  ✅ Metadata Index: Pre-search filtering
+  ✅ Reranking: Legal relevance scoring
+
+BENEFITS:
+  1. ✅ Exact citation match
+     → Returns ONLY Section 288-95
+     → 100% citation accuracy
+
+  2. ✅ Small semantic chunks (300-500 tokens)
+     → Precise conceptual matching
+     → Better semantic relevance
+
+  3. ✅ Exact term matching
+     → "210 penalty units" exact match
+     → Thresholds preserved
+
+  4. ✅ Citation expansion
+     → Definitions included
+     → Complete answer
+
+  5. ✅ Reranking
+     → Most relevant chunks prioritized
+     → Efficient context usage
+
+  6. ✅ Efficient context assembly
+     → Top 5 chunks = 12,500 tokens
+     → Fits in LLM context window
+     → Complete, accurate answer
+
+RESULT:
+  - Response time: 1.9 seconds (46% faster)
+  - Citation accuracy: 94% (32% improvement)
+  - Retrieval precision: 78% (26% improvement)
+  - User satisfaction: High
+```
+
+---
+
+#### Performance Comparison Summary
+
+| Metric | Single Index | Multi-Index | Improvement |
+|--------|--------------|-------------|-------------|
+| **Citation Precision** | 71% | 94% | **+32%** |
+| **Retrieval Precision** | 62% | 78% | **+26%** |
+| **Query Latency (p95)** | 3.5s | 1.9s | **-46%** |
+| **Context Adequacy** | 55% (follow-up needed) | 92% (complete) | **+67%** |
+| **Cost per Query** | $0.068 | $0.044 | **-35%** |
+| **Infrastructure Cost** | $180/month | $417/month | +$237/month |
+
+**ROI Analysis**:
+
+```
+Additional infrastructure cost: $237/month
+
+Query cost savings: $0.024/query
+Break-even volume: 9,875 queries/month
+
+BUT: Hidden benefits not captured in costs:
+  - 46% latency reduction → Better UX, higher adoption
+  - 32% citation accuracy → Fewer hallucinations, less legal risk
+  - 26% precision improvement → Fewer user complaints
+  - Future-proofing → Easier to add specialized indices
+
+Verdict: ✅ Multi-index justified by quality improvements, not pure cost
+```
+
+---
+
+#### Key Takeaways
+
+1. **Citation accuracy is non-negotiable** in tax law
+   - Semantic search treats "Section 288-95" as numbers
+   - Exact match is required for legal precision
+
+2. **Context completeness matters**
+   - Child chunks for search precision
+   - Parent chunks for LLM context
+
+3. **Tax terminology requires exact matching**
+   - "210 penalty units" must match exactly
+   - BM25 complements semantic search
+
+4. **Legal citations are interconnected**
+   - Section 288-95 references definitions
+   - Citation expansion provides complete answers
+
+5. **Reranking improves quality**
+   - Vector similarity ≠ legal relevance
+   - LLM understands query intent and legal hierarchy
+
+6. **Performance gains are significant**
+   - 46% faster latency
+   - 32% better citation accuracy
+   - 35% lower cost per query
+
+---
 
 ### Quality Metrics
 
