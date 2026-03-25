@@ -1,7 +1,7 @@
 # User Stories - Case Assistant Chat
 
 **Domain**: Australian Taxation Law (100% Focus)
-**Document Version**: 1.1.0
+**Document Version**: 1.2.0
 **Date**: 2026-03-25
 **Status**: Product Requirements
 **Audience**: Product Managers, Engineering, QA Teams
@@ -18,6 +18,7 @@
 - [User Story 1.3: Session Management](#user-story-13-session-management)
 - [User Story 1.4: Table Extraction](#user-story-14-table-extraction)
 - [Acceptance Criteria Summary](#acceptance-criteria-summary)
+- [2.2 Multi-Index Chunking Strategy](#22-multi-index-chunking-strategy)
 
 ---
 
@@ -298,6 +299,7 @@
 - **[03-message-routing.md](./03-message-routing.md)** - Message routing and orchestrator
 - **[04-session-lifecycle.md](./04-session-lifecycle.md)** - Session state management and TTL
 - **[05-evaluation-strategy.md](./05-evaluation-strategy.md)** - Quality metrics and testing framework
+- **[11-multi-index-strategy.md](./11-multi-index-strategy.md)** - Complete multi-index architecture specification
 
 ---
 
@@ -305,6 +307,7 @@
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.2.0 | 2026-03-25 | Updated chunking strategy to multi-index architecture (6 specialized indices for different AI workflow stages) |
 | 1.1.0 | 2026-03-25 | Updated for Australian taxation context (ITAA, ATO rulings, AAT decisions, Australian legal citations) |
 | 1.0.0 | 2026-03-25 | Initial user story documentation for Case Assistant Chat |
 
@@ -339,3 +342,375 @@
 - Chartered Accountants Australia and New Zealand (CA ANZ)
 - Tax Institute of Australia
 - Institute of Public Accountants (IPA)
+
+
+## 2.2 Multi-Index Chunking Strategy
+
+### Architecture Overview
+
+The Case Assistant system employs a **6-index architecture** where documents are chunked and indexed differently based on their intended use in the AI workflow. Each document type produces multiple chunk types that feed specialized indices optimized for specific retrieval patterns.
+
+```mermaid
+graph LR
+    subgraph "Document Ingestion"
+        DOC[Tax Law Document]
+        CHUNKER[Intelligent Chunker]
+    end
+
+    subgraph "Multi-Path Chunking"
+        P1[Path 1: Citation Extraction<br/>Exact legal citations]
+        P2[Path 2: Semantic Child Chunks<br/>300-500 tokens]
+        P3[Path 3: Keyword Extraction<br/>Tax terms, phrases]
+        P4[Path 4: Context Parent Chunks<br/>1500-2500 tokens]
+        P5[Path 5: Metadata Extraction<br/>Document metadata]
+        P6[Path 6: Cross-Reference Parsing<br/>Citation graph]
+    end
+
+    subgraph "Specialized Indices"
+        IDX1[Legal Citation Index<br/>Exact match]
+        IDX2[Semantic Index<br/>Vector search]
+        IDX3[Keyword Index<br/>BM25 search]
+        IDX4[Context Index<br/>Parent chunks]
+        IDX5[Metadata Index<br/>Filters]
+        IDX6[Cross-Reference Index<br/>Citation graph]
+    end
+
+    DOC --> CHUNKER
+    CHUNKER --> P1
+    CHUNKER --> P2
+    CHUNKER --> P3
+    CHUNKER --> P4
+    CHUNKER --> P5
+    CHUNKER --> P6
+
+    P1 --> IDX1
+    P2 --> IDX2
+    P3 --> IDX3
+    P4 --> IDX4
+    P5 --> IDX5
+    P6 --> IDX6
+```
+
+### Index-Specific Chunking Specifications
+
+#### Index 1: Legal Citation Index (Exact Match)
+
+**Purpose**: Fast exact-match lookup for legal citations.
+
+**Chunking Strategy**:
+- **Content**: Section numbers, case citations, ruling references extracted as discrete entities
+- **Storage**: Key-value store (DynamoDB), not vector embeddings
+- **Examples**: "Section 288-95", "ITAA 1997 s 6-5", "TR 2022/1", "FCT v. Myer (1937)"
+- **No tokenization**: Citations stored as canonical strings with aliases
+
+**Per Document Type**:
+
+| Document Type | Citations Extracted | Example Storage |
+|---------------|---------------------|-----------------|
+| Tax Legislation | All sections, subsections, definitions | `ITAA 1997 s 288-95` → `["s288-95", "section 288-95", "Sec. 288-95"]` |
+| Tax Rulings | Ruling number, cited legislation, referenced cases | `TR 2022/1` → citations to ITAA s 8-1, FCT v. Case |
+| Case Law | Case name, citation, prior decisions cited | `FCT v. Myer (1937) 56 CLR 635` → parallel citations |
+| Tax Determinations | TD number, referenced sections | `TD 2023/5` → cites ITAA 1997 s 6-5 |
+
+#### Index 2: Semantic Index (Child Chunks)
+
+**Purpose**: Vector-based semantic search for conceptual queries.
+
+**Chunking Strategy**:
+- **Chunk Size**: 300-500 tokens (small for semantic precision)
+- **Chunk Type**: Child chunks (semantic units)
+- **Embedding Model**: Amazon Titan Embeddings v2 (1536 dimensions)
+- **Overlap**: 200 tokens between chunks for context continuity
+
+**Document-Type-Specific Semantic Chunking**:
+
+**Tax Legislation (Acts)**:
+- **Split Strategy**: By semantic unit within section hierarchy
+- **Boundaries**: Subsection boundaries preserved, definition blocks kept intact
+- **Child Chunk Size**: 350-500 tokens
+- **Example**: ITAA 1997 s 8-5 split into:
+  - Chunk 1: "General deduction provision for individuals..."
+  - Chunk 2: "Positive limb: loss or outgoing..."
+  - Chunk 3: "Negative limb: private or domestic..."
+
+**Tax Rulings (TR, PR, CR)**:
+- **Split Strategy**: By legal clause + reasoning unit
+- **Boundaries**: Citation blocks preserved, reasoning chains kept intact
+- **Child Chunk Size**: 400-500 tokens
+- **Example**: TR 2022/1 split into:
+  - Chunk 1: "Ruling purpose and scope..."
+  - Chunk 2: "Legal analysis of s 8-1..."
+  - Chunk 3: "Application to taxpayers..."
+
+**Case Law**:
+- **Split Strategy**: By paragraph cluster + legal concept
+- **Boundaries**: Paragraph numbers preserved, judgment sections respected
+- **Child Chunk Size**: 400-500 tokens
+- **Example**: AAT decision split into:
+  - Chunk 1: "Facts of the case..."
+  - Chunk 2: "Tribunal's findings..."
+  - Chunk 3: "Legal reasoning and precedent..."
+
+**Documents with Tables**:
+- **Split Strategy**: Tables NOT split in semantic index (see Context Index)
+- **Child Chunk Size**: N/A (tables handled separately by VLM+GPU)
+- **Table Pages**: Text around tables chunked normally
+
+#### Index 3: Keyword Index (BM25)
+
+**Purpose**: Exact term matching for tax-specific terminology.
+
+**Chunking Strategy**:
+- **Content**: Same as semantic chunks (re-uses content with different index)
+- **Indexing**: BM25 analyzer with tax law vocabulary
+- **No chunking changes**: Uses same chunk boundaries as semantic index
+- **Keyword Extraction**: Automatic extraction of tax terms, thresholds, amounts
+
+**Tax-Specific Keywords**:
+
+| Keyword Type | Examples | Importance |
+|--------------|----------|------------|
+| **Section Numbers** | "s 8-1", "section 288-95" | Critical for citation lookup |
+| **Monetary Thresholds** | "$18,200", "210 penalty units" | Exact values matter |
+| **Tax Terms** | "BAS", "CGT", "FBT", "GST" | Specialized terminology |
+| **Legal Phrases** | "shall", "may", "must", "penalty" | Legal precision required |
+| **Time Periods** | "28 days", "financial year", "income year" | Compliance deadlines |
+
+#### Index 4: Context Index (Parent Chunks)
+
+**Purpose**: Store large parent chunks with full legal context for LLM consumption.
+
+**Chunking Strategy**:
+- **Chunk Size**: 1500-2500 tokens (complete legal provisions)
+- **Chunk Type**: Parent chunks (aggregate of child chunks)
+- **Relationship**: Each parent chunk contains 3-6 child chunks
+- **Embedding**: Same embedding model as semantic index (Titan v2)
+
+**Per Document Type**:
+
+| Document Type | Parent Chunk Structure | Example |
+|---------------|----------------------|---------|
+| **Tax Legislation** | Complete section with all subsections | ITAA 1997 s 8-5 (all subsections) = 1 parent chunk |
+| **Tax Rulings** | Complete ruling paragraph cluster | TR 2022/1 paragraphs 15-25 = 1 parent chunk |
+| **Case Law** | Complete judgment section with paragraphs | AAT decision "Tribunal's Findings" = 1 parent chunk |
+| **Tax Tables** | Complete table as single parent chunk | ATO tax rate table = 1 parent chunk (VLM extracted) |
+
+**VLM+GPU Table Integration**:
+- Tables extracted by VLM+GPU pipeline (see [02-document-ingestion.md](./02-document-ingestion.md))
+- Complete tables stored as single parent chunks
+- Table chunks include: headers, structure, captions, footnotes
+- No child chunks for tables (tables are atomic units)
+
+#### Index 5: Metadata Index (Document-Level)
+
+**Purpose**: Fast pre-search filtering by document attributes.
+
+**Content**:
+- **Granularity**: Document-level (not chunk-level)
+- **Fields**: Document type, effective date, jurisdiction, status, topics
+- **Storage**: DynamoDB for fast key-value lookups
+- **No chunking**: Document metadata extracted once per document
+
+**Per Document Type Metadata**:
+
+| Field | Tax Legislation | Tax Rulings | Case Law |
+|-------|----------------|-------------|----------|
+| **Document Type** | `tax_legislation` | `tax_ruling` | `case_law` |
+| **Effective Date** | Act commencement date | Ruling date | Decision date |
+| **Jurisdiction** | `federal` | `federal` | `aat` / `federal_court` / `high_court` |
+| **Status** | `active` / `repealed` / `amended` | `current` / `withdrawn` / `final` | `precedent` / `overruled` |
+| **Year** | Act year (1936, 1997) | Ruling year | Decision year |
+| **Topics** | [`income_tax`, `assessment`] | [`deductions`, `expenses`] | [`residency`, `source`] |
+
+#### Index 6: Cross-Reference Index (Citation Graph)
+
+**Purpose**: Track citation relationships between documents and chunks.
+
+**Chunking Strategy**:
+- **Granularity**: Chunk-level citation links
+- **Content**: Source chunk → target chunk relationships
+- **Extraction**: Citations parsed during document ingestion
+- **Storage**: Graph database (Neptune) or adjacency list (DynamoDB)
+
+**Citation Types Tracked**:
+
+| Citation Type | Example | Direction |
+|---------------|---------|-----------|
+| **Legislation Citation** | TR 2022/1 cites ITAA 1997 s 8-1 | Ruling → Legislation |
+| **Case Citation** | AAT decision cites FCT v. Myer | Decision → Case |
+| **Ruling Citation** | TD 2023/5 cites TR 2022/1 | TD → TR |
+| **Definition Reference** | Section cites definition in s 995-1 | Section → Definition |
+| **Amendment Reference** | Amendment Act amends section | Amendment → Section |
+
+### Chunking Workflow by Document Type
+
+#### Tax Legislation (ITAA 1936, ITAA 1997, GST Act, FBTAA)
+
+```
+Input: ITAA 1997 Act (500 pages)
+
+Path 1 - Citation Index:
+  Extract: All section numbers (s 8-1, s 8-5, s 288-95, ...)
+  Extract: All definitions (s 995-1: 'member', 'resident', ...)
+  Store: Exact citation lookup
+
+Path 2 - Semantic Index:
+  Split: By semantic unit within sections
+  Size: 350-500 tokens per child chunk
+  Overlap: 200 tokens between chunks
+  Total: ~2,500 child chunks
+
+Path 3 - Keyword Index:
+  Extract: Tax terms, section numbers, monetary thresholds
+  Index: BM25 with legal vocabulary
+  Total: ~2,500 keyword entries
+
+Path 4 - Context Index:
+  Aggregate: 3-6 child chunks → 1 parent chunk
+  Boundaries: Section boundaries preserved
+  Size: 1,500-2,500 tokens per parent chunk
+  Total: ~500 parent chunks
+
+Path 5 - Metadata Index:
+  Extract: Document metadata (Act, year, status, topics)
+  Store: Document-level record
+
+Path 6 - Cross-Reference Index:
+  Extract: Citations to other Acts, rulings, cases
+  Build: Citation graph edges
+```
+
+#### Tax Rulings (TR, TD, ATO ID)
+
+```
+Input: TR 2022/1 (50 pages)
+
+Path 1 - Citation Index:
+  Extract: Ruling number, cited sections, referenced cases
+  Store: Exact ruling lookup
+
+Path 2 - Semantic Index:
+  Split: By legal clause + reasoning unit
+  Size: 400-500 tokens per child chunk
+  Overlap: 250 tokens (reasoning chains need continuity)
+  Total: ~300 child chunks
+
+Path 3 - Keyword Index:
+  Extract: Legal terms, ruling references, thresholds
+  Index: BM25 with ruling vocabulary
+
+Path 4 - Context Index:
+  Aggregate: Complete reasoning chains
+  Size: 1,500-2,000 tokens per parent chunk
+  Total: ~60 parent chunks
+
+Path 5 - Metadata Index:
+  Extract: Ruling metadata (number, date, status, topics)
+
+Path 6 - Cross-Reference Index:
+  Extract: Citations to legislation, other rulings, cases
+  Build: Bidirectional citation links
+```
+
+#### Case Law (AAT, Federal Court, High Court)
+
+```
+Input: AAT Decision [2023] AATA 1234 (100 pages)
+
+Path 1 - Citation Index:
+  Extract: Case name, citation, parallel citations
+  Store: Exact case lookup
+
+Path 2 - Semantic Index:
+  Split: By paragraph cluster + legal concept
+  Size: 400-500 tokens per child chunk
+  Boundaries: Paragraph numbers preserved
+  Total: ~600 child chunks
+
+Path 3 - Keyword Index:
+  Extract: Case terms, statutory references, party names
+  Index: BM25 with case law vocabulary
+
+Path 4 - Context Index:
+  Aggregate: Complete judgment sections
+  Size: 2,000-2,500 tokens per parent chunk
+  Total: ~120 parent chunks
+
+Path 5 - Metadata Index:
+  Extract: Case metadata (court, decision date, status, topics)
+
+Path 6 - Cross-Reference Index:
+  Extract: Citations to statutes, precedents, subsequent cases
+  Build: Citation precedence graph
+```
+
+#### Tax Rate Tables (ATO Schedules)
+
+```
+Input: Individual Income Tax Rate Schedule 2024-25 (2 pages, complex table)
+
+Path 1 - Citation Index:
+  Extract: Table caption, financial year reference
+  Store: Table metadata
+
+Path 2 - Semantic Index:
+  Skip: Tables not split in semantic index
+
+Path 3 - Keyword Index:
+  Extract: Tax rates, thresholds, bracket numbers
+  Index: BM25 exact amounts
+
+Path 4 - Context Index:
+  VLM Extraction: Complete table as single parent chunk
+  Size: Variable (entire table)
+  Format: Structured JSON + text representation
+  Total: 1 parent chunk (complete table)
+
+Path 5 - Metadata Index:
+  Extract: Table metadata (year, type, status)
+
+Path 6 - Cross-Reference Index:
+  Extract: References to legislation, rulings
+```
+
+### Hybrid Retrieval Strategy
+
+**Query**: "What are the penalties for late BAS lodgment under Section 288-95?"
+
+**Retrieval Flow**:
+
+1. **Metadata Index**: Filter to active ITAA 1997 documents (10ms)
+2. **Citation Index**: Exact match to "Section 288-95" (5ms)
+3. **Semantic Index**: Vector search "late BAS lodgment penalties" → 20 child chunks (80ms)
+4. **Keyword Index**: BM25 "penalty units BAS due date" → 15 chunks (40ms)
+5. **Result Fusion**: Reciprocal Rank Fusion (RRF) combines semantic + keyword → 25 unique child chunks
+6. **Context Index**: Fetch 12 parent chunks for full provision context (30ms)
+7. **Cross-Reference Index**: Expand citations to definitions, examples (20ms)
+8. **Reranking**: LLM reranks top 20 chunks → selects top 5 (200ms)
+9. **LLM Generation**: Generate response with full context (1500ms)
+
+**Total Latency**: ~1.9 seconds (vs. 3.5s with single-index approach)
+
+### Quality Metrics
+
+**Automatic Quality Checks**:
+
+| Metric | Target | Alert Threshold | Critical |
+|--------|--------|-----------------|----------|
+| Chunk size outliers | <5% | >10% | >20% |
+| Broken references | 0% | >2% | >5% |
+| Retrieval expansion needed | <30% | >50% | >70% |
+| Citation extraction precision | >95% | <90% | <85% |
+
+**Retrieval Quality Metrics**:
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Citation Precision | >95% | Exact citation matches |
+| Context Adequacy | <30% follow-up retrieval | Responses needing more context |
+| False Positive Rate | <15% | Retrieved chunks not used |
+
+### Related Documents
+
+- **[02-document-ingestion.md](./02-document-ingestion.md)** - VLM+GPU table processing pipeline
+- **[11-multi-index-strategy.md](./11-multi-index-strategy.md)** - Complete multi-index architecture
