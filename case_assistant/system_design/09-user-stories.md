@@ -1,12 +1,14 @@
-# User Stories - Case Assistant Chat
+# User Stories - ATO Case Assistant
 
 **Domain**: Australian Taxation Law (100% Focus)
-**Document Version**: 1.3.0
-**Date**: 2026-03-25
+**Document Version**: 2.0.0
+**Date**: 2026-03-27
 **Status**: Product Requirements
 **Audience**: Product Managers, Engineering, QA Teams
 
-> **SCOPE**: This document defines user stories for the Case Assistant Chat system, an Australian tax law-focused conversational AI assistant that enables tax professionals to upload tax law documents and query them through natural language.
+> **SCOPE**: This document defines user stories for the ATO Case Assistant system, an **ATO internal** Australian tax law-focused conversational AI assistant that enables **ATO personnel** to upload tax law documents and query them through natural language for **ATO operational use only**.
+
+> **IMPORTANT**: This system is designed for **ATO internal use only** - assisting authorized ATO personnel (officers, auditors, technical advisors, policy officers) in their official duties. It is NOT intended for taxpayer access.
 
 ---
 
@@ -26,43 +28,48 @@
 
 ## Epic Overview
 
-**Epic**: Australian Tax Law Case Assistant - Document Upload & Query
+**Epic**: ATO Internal Tax Law Case Assistant - Document Upload & Query
 
-**Business Value**: Enable Australian tax professionals (tax agents, accountants, tax lawyers, ATO officers) to quickly find accurate tax law information and precedent from complex legal documents without manual review, reducing research time from hours to minutes.
+**Business Value**: Enable **ATO personnel** (auditors, technical advisors, policy officers, legal services) to quickly find accurate tax law information and precedent from complex legal documents without manual review, reducing research time from hours to minutes and improving **ATO operational efficiency** in audit decision-making, technical guidance, and policy research.
 
-**Target Users**:
-- Individual taxpayers researching Australian tax law
-- Registered tax agents and BAS agents
-- CPAs Australia and CA ANZ members
-- Tax lawyers and legal professionals
-- ATO officers and tax compliance staff
-- Tax policy advisors and analysts
+**Target Users** (ATO Internal Only):
+- ATO auditors and compliance officers
+- ATO technical advisors and tax specialists
+- ATO policy officers and analysts
+- ATO legal services branch
+- ATO senior auditors and team leaders
+- ATO call centre officers (for operational support)
+- ATO graduate/trainee officers
 
 **Key Differentiators**:
+- **ATO Internal Use Only**: Authorized ATO personnel only (GovTECH/ATO network access)
 - **Australian Tax Law Only**: 100% focused on Australian taxation law (ITAA 1936, ITAA 1997, Taxation Rulings, AAT/Federal Court decisions)
+- **ATO Position Alignment**: Responses aligned with current ATO practice statements, audit methodologies, and operational guidance
 - **Table Intelligence**: VLM+GPU processing preserves complex ATO form structures (tax return schedules, GST calculations, FBT schedules)
 - **Session Persistence**: Conversation history persists indefinitely; documents expire after 7-day inactivity
 - **Legal Citations**: Proper Australian tax law citation format (ITAA s, TR, TD, AAT decisions, Federal Court citations)
+- **Operational Context**: Designed for ATO operational scenarios (audit support, technical guidance, policy research)
 
 ---
 
 ## User Story 1.1: Document Upload
 
-**Title**: Upload Australian Tax Law Documents for Case Research
+**Title**: Upload Australian Tax Law Documents for ATO Operational Use
 
-**As a** Australian tax professional
+**As a** ATO officer or technical advisor
 **I want to** upload PDF or Word documents containing Australian tax law materials
-**So that** the system can index and make the content searchable through natural language queries
+**So that** I can quickly search and retrieve accurate legal information for audit decision-making, technical guidance, or policy research
 
-### User Personas
+### User Personas (ATO Internal)
 
-| Persona | Description | Typical Documents |
-|---------|-------------|-------------------|
-| **Taxpayer** | Individual researching personal tax matters | ATO publications, tax rulings |
-| **Tax Agent** | Registered tax agent preparing client returns | ITAA sections, ATO rulings, ATO IDs |
-| **Tax Lawyer** | Legal professional building case arguments | AAT decisions, Federal Court cases, High Court precedents |
-| **ATO Officer** | Compliance officer verifying tax positions | ATO manuals, law administration practice statements, MT/PS guidance |
-| **Accountant** | CPA Australia/CA ANZ advising clients | Taxation rulings, determination documents, interpretation guidance |
+| Persona | Description | Typical Documents | Use Case |
+|---------|-------------|-------------------|----------|
+| **ATO Auditor** | Field/compliance officer conducting audits | ITAA sections, ATO rulings, AAT decisions, Audit Manual chapters | Audit decision support, evidence gathering |
+| **Technical Advisor** | Tax specialist providing technical guidance | ITAA sections, TR/TD rulings, ATO IDs, Law Administration Practice Statements | Technical guidance, ruling interpretation |
+| **Policy Officer** | Policy analyst reviewing legislation impact | ITAA 1936/1997, GST Act, FBTAA, TR rulings, Federal Court cases | Policy research, legislative analysis |
+| **ATO Legal** | Legal services branch providing advice | AAT decisions, Federal Court/High Court cases, ITAA provisions | Legal advice, risk assessment |
+| **Senior Auditor** | Team leader reviewing audit decisions | Complete audit files, ATO Practice Statements, case law | Review and sign-off, quality assurance |
+| **Call Centre Officer** | Phone inquiries, standard responses | ATO publications, current ruling summaries, standard procedures | Quick accurate answers for taxpayer inquiries |
 
 ### Acceptance Criteria
 
@@ -82,8 +89,9 @@
 | **Automatic Extraction** | System extracts title, author, creation date |
 | **Table Detection** | System flags pages containing tables for VLM+GPU processing |
 | **Delta Detection** | System calculates page-level SHA-256 hashes for efficient re-upload |
-| **Custom Tags** | User can optionally add tags: tax category, jurisdiction (federal/state), income year |
-| **Document Type** | System categorises: ITAA 1936, ITAA 1997, Taxation Ruling (TR), Tax Determination (TD), AAT Decision, Federal Court Case, High Court Case, ATO Interpretive Decision, Law Administration Practice Statement, Tax Ruling (TR), Other |
+| **Custom Tags** | User can optionally add tags: tax category, ATO business line, income year, audit type |
+| **Document Type** | System categorises: ITAA 1936, ITAA 1997, Taxation Ruling (TR), Tax Determination (TD), AAT Decision, Federal Court Case, High Court Case, ATO Interpretive Decision, Law Administration Practice Statement, ATO Practice Statement (PS), ATO Audit Manual, ATO Public Ruling, ATO Interpretative Decision, Other |
+| **ATO Classification** | ATO-specific tags: business line (individual, small business, corporates), audit type, compliance area |
 
 #### Upload Feedback
 
@@ -119,11 +127,11 @@
 
 ## User Story 1.2: Natural Language Query
 
-**Title**: Ask Australian Tax Law Questions About Uploaded Documents
+**Title**: Query Australian Tax Law for ATO Operational Decisions
 
-**As a** Australian tax professional
+**As a** ATO officer or technical advisor
 **I want to** ask questions in natural language about the uploaded Australian tax law documents
-**So that** I can get accurate, contextual answers with proper legal citations without reading entire documents
+**So that** I can get accurate, contextual answers with proper legal citations and ATO position alignment for audit decisions, technical guidance, or policy research
 
 ### Acceptance Criteria
 
@@ -159,12 +167,14 @@
 
 | Query Type | Examples | Expected Behaviour |
 |------------|----------|-------------------|
-| **Simple Lookup** | "What is the period of review under section 105-55 of schedule 1 to the Taxation Administration Act 1953?" | Direct answer with section citation |
-| **Comparative** | "How does the general deduction provision in s 8-1 ITAA 1997 differ from s 8-5?" | Side-by-side comparison with distinctions |
-| **Precedent-Based** | "What factors did the AAT consider in [case name]?" | Summary of case with citation |
-| **Complex Analysis** | "How do the CGT main residence exemption rules apply when I move out and rent the property?" | Multi-source answer with ITAA 1997 and ruling citations |
-| **Table Queries** | "What is the income tax-free threshold for 2024-25?" | Extracts from ATO tax table with proper row/column reference |
-| **Ruling Queries** | "What does TR 95/D1 say about employee travel allowances?" | Direct ruling reference with paragraph citations |
+| **Simple Lookup** | "What is the period of review under section 105-55 of schedule 1 to the Taxation Administration Act 1953?" | Direct answer with section citation for audit time limit assessment |
+| **Comparative** | "How does the general deduction provision in s 8-1 ITAA 1997 differ from s 8-5?" | Side-by-side comparison with distinctions for audit decision support |
+| **Precedent-Based** | "What factors did the AAT consider in [case name] regarding reasonable excuse?" | Summary of case with citation for audit position evaluation |
+| **ATO Position** | "What is the current ATO position on SMSF non-arm's length income per TR 2022/D1?" | ATO position aligned with current practice statements and rulings |
+| **Complex Analysis** | "What are the CGT main residence exemption implications for this taxpayer scenario per AAT precedent?" | Multi-source answer with ITAA 1997, ATO rulings, and case law for audit determination |
+| **Table Queries** | "What are the current income tax rates and thresholds for 2024-25?" | Extracts from ATO tax table with proper row/column reference for compliance checking |
+| **Penalty Queries** | "What penalty provisions apply under ITAA 1997 s 288-95 for late BAS lodgment in this case?" | Penalty calculation with section references, amounts, and ATO discretion notes |
+| **Audit Support** | "What documentation requirements apply under PS LA 2001/1 for this expense claim?" | ATO Practice Statement reference with audit checklist requirements |
 
 #### Table Handling
 
@@ -179,20 +189,24 @@
 
 | Criterion | Requirement |
 |-----------|-------------|
+| **ATO Internal Use** | System operates exclusively for ATO internal operations (authorized personnel only) |
 | **Tax Law Scope** | System operates exclusively within Australian tax law domain |
-| **Scope Boundary** | System refuses general legal advice outside tax law |
-| **Disclaimers** | Responses include disclaimer: "For informational purposes, not legal or tax advice" |
-| **Citation Accuracy** | All claims include source citations |
+| **ATO Position Alignment** | Responses align with current ATO practice statements, audit methodologies, and operational guidance |
+| **Scope Boundary** | System refuses general legal advice outside Australian tax law or ATO operations |
+| **Disclaimers** | Responses include disclaimer: "ATO internal use only - for operational guidance, not binding advice" |
+| **Citation Accuracy** | All claims include source citations with correct Australian legal citation format |
+| **Access Control** | System accessible only via ATO network with authenticated ATO personnel access |
+| **ATO Use Confirmation** | System confirms ATO internal use on every interaction |
 
 ---
 
 ## User Story 1.3: Session Management
 
-**Title**: Manage Persistent Conversations Across Sessions
+**Title**: Manage Persistent Conversations for ATO Operational Work
 
-**As a** Australian tax professional
+**As a** ATO officer or technical advisor
 **I want to** return to previous conversations and continue my research
-**So that** I don't lose context when working on complex tax matters over multiple days
+**So that** I don't lose context when working on complex audit matters, technical guidance, or policy research over multiple days
 
 ### Acceptance Criteria
 
@@ -227,11 +241,11 @@
 
 ## User Story 1.4: Table Extraction
 
-**Title**: Accurately Extract and Query Complex Australian Tax Tables
+**Title**: Accurately Extract and Query Complex ATO Tables for Operational Use
 
-**As a** Australian tax professional
+**As a** ATO officer or technical advisor
 **I want to** ask questions about complex ATO tables and schedules
-**So that** I can get accurate data from ATO forms and tax schedules without manual lookup
+**So that** I can get accurate data from ATO forms, tax return schedules, and compliance tables for audit decisions, technical guidance, or policy research
 
 ### Acceptance Criteria
 
@@ -286,11 +300,12 @@
 | Category | Requirement |
 |----------|-------------|
 | **Performance** | Document ingestion: <5 min for <10MB docs; Query response: <5 seconds |
-| **Scalability** | Support 10x more users through incremental ingestion (90% cost reduction) |
+| **Scalability** | Support 10x more ATO users through incremental ingestion (90% cost reduction) |
 | **Availability** | Single-region deployment with 99.9% uptime target |
-| **Security** | Documents auto-delete after 7-day inactivity; sessions persist indefinitely |
-| **Compliance** | Australian tax law scope only; legal disclaimers included; no general legal advice |
+| **Security** | Documents auto-delete after 7-day inactivity; sessions persist indefinitely; ATO network only access |
+| **Compliance** | ATO internal use only; Australian tax law scope only; ATO position alignment; ATO data governance; legal disclaimers included |
 | **Citation Standards** | Support Australian tax citation formats: ITAA 1936/1997, TR, TD, AAT decisions, Federal Court citations |
+| **Access Control** | ATO network authentication only; authorized ATO personnel; GovTECH compliance |
 
 ---
 
@@ -309,6 +324,7 @@
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.0.0 | 2026-03-27 | **CRITICAL SCOPE UPDATE**: Redesigned all user stories for **ATO internal use only** - replaced taxpayer personas with ATO professional personas (auditors, technical advisors, policy officers, ATO legal services, call centre officers), updated use cases for ATO operational scenarios (audit decision support, technical guidance, policy research, compliance assessment), added ATO-specific compliance requirements (access control, ATO network only, ATO use confirmation, ATO position alignment), updated document types to include ATO internal guidance (ATO Practice Statements, Audit Manual, ATO Public Rulings), clarified all examples and queries for ATO internal operations |
 | 1.3.0 | 2026-03-25 | Added comprehensive retrieval flow explanation with step-by-step walkthrough of multi-index query processing |
 | 1.2.0 | 2026-03-25 | Updated chunking strategy to multi-index architecture (6 specialized indices for different AI workflow stages) |
 | 1.1.0 | 2026-03-25 | Updated for Australian taxation context (ITAA, ATO rulings, AAT decisions, Australian legal citations) |
@@ -316,7 +332,9 @@
 
 ---
 
-**NOTE**: These user stories reflect the Australian tax law specialisation of the Case Assistant system. For general legal or internal knowledge assistant requirements, refer to separate product specifications.
+**NOTE**: These user stories reflect the **ATO internal use** and Australian tax law specialisation of the Case Assistant system. This system is designed exclusively for **authorized ATO personnel** (auditors, technical advisors, policy officers, legal services) in their official duties. For taxpayer-facing systems or general legal applications, refer to separate product specifications.
+
+**ATO INTERNAL USE CONFIRMATION**: This system confirms ATO internal use on every interaction and is accessible only via ATO network with authenticated personnel access.
 
 ## Key Australian Tax Law References
 
