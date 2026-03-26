@@ -28,36 +28,29 @@ stateDiagram-v2
     Deleting --> [*]: Data removed
 
     Active --> Deleting: User deletes session
-    Chatting --> Deleting: User manual delete
-    Paused --> Deleting: User deletes session
 
     note right of Active
-        SESSION LIFECYCLE:
-        - Session persists indefinitely
-        - User can return anytime
-        - No auto-deletion while active
-        - Documents tracked per session
+        SESSION PERSISTS INDEFINITELY
+        User can return anytime
+        No auto-deletion while active
+        Documents tracked per session
     end note
 
     note right of Inactive
-        DOCUMENT TTL:
-        - Documents: 7 days inactive
-        - Auto-extend on activity
-        - Vectors deleted with docs
-        - Conversation history persists
+        DOCUMENT TTL: 7 DAYS INACTIVE
+        Auto-extend on activity
+        Vectors deleted with docs
+        Conversation history persists
     end note
 
     note right of Cleanup
-        DATA DELETION POLICY:
+        DELETION POLICY
         Documents deleted after:
-        - 7 days inactivity
-        - OR user manual delete
+        7 days inactivity OR user delete
 
         Conversation persists:
-        - Chat history retained
-        - Session metadata kept
-        - User can view past conversations
-        - Only documents are purged
+        Chat history retained
+        Session metadata kept
     end note
 ```
 
