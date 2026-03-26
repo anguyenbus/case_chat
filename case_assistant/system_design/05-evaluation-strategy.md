@@ -396,46 +396,33 @@ Evaluation:
 
 ```mermaid
 graph TB
-    subgraph "Evaluation Metrics Hierarchy - Australian Tax Law AI"
+    subgraph "Evaluation Metrics Hierarchy - ATO Internal Tax Law AI"
         ALL[Overall Quality Score]
 
         subgraph "Category Scores"
-            SAFE[Safety Score<br/>Scope + Bias + Harm<br/>Australian jurisdiction]
-            QUAL[Quality Score<br/>Relevance + Tone + Accuracy]
+            SAFE[Safety Score<br/>Scope + Bias + Harm<br/>ATO jurisdiction + Access control]
+            QUAL[Quality Score<br/>Relevance + Tone + Accuracy<br/>ATO alignment]
             TRUTH[Truthfulness Score<br/>Hallucination + Faithfulness<br/>Citation format]
-            RAG[Retrieval Score<br/>6-index performance<br/>Context utilization]
+            RAG[Retrieval Score<br/>6-index performance<br/>Context utilization<br/><i>See Figure 7.2</i>]
         end
 
-        subgraph "Individual Metrics (25+)"
-            S1[Scope Adherence<br/>Australian tax law only]
-            S2[Bias Detection<br/>Australian taxpayer bias]
-            S3[Harm Prevention<br/>Appropriate disclaimers]
+        subgraph "Individual Metrics (Core)"
+            S1[Scope Adherence<br/>Australian tax law only<br/>ATO internal use]
+            S2[Bias Detection<br/>Operational bias detection]
+            S3[Harm Prevention<br/>ATO operational boundaries<br/>Appropriate disclaimers]
+            S4[Access Control<br/>ATO network only<br/>Authorized personnel]
 
-            Q1[Relevance<br/>Australian tax question]
-            Q2[Tone Match<br/>Professional, empathetic]
-            Q3[Tax Accuracy<br/>ITAA/ATO/case law accuracy]
-            Q4[Clarity<br/>Plain English explanations]
-            Q5[Completeness<br/>Fully addresses question]
-            Q6[Citation Format<br/>Australian legal citation]
+            Q1[Relevance<br/>ATO operational relevance]
+            Q2[Tone Match<br/>Professional, authoritative<br/>ATO-appropriate]
+            Q3[Tax Accuracy<br/>ITAA/ATO/case law accuracy<br/>ATO position alignment]
+            Q4[Clarity<br/>Clear for ATO officers<br/>Technical when needed]
+            Q5[Completeness<br/>Fully addresses ATO query]
+            Q6[Citation Format<br/>Australian legal citation<br/>ATO referencing]
 
             T1[Hallucination Rate<br/>No fake tax laws]
             T2[Faithfulness<br/>Based on retrieved facts]
             T3[Attribution<br/>Proper sourcing]
-            T4[Citation Accuracy<br/>Correct section numbers]
-
-            R1[Metadata Filter<br/>DynamoDB accuracy]
-            R2[Citation Match<br/>DynamoDB exact match]
-            R3[Semantic Search<br/>OpenSearch relevance]
-            R4[Keyword Search<br/>BM25 tax terms]
-            R5[Context Fetch<br/>Parent chunk quality]
-            R6[Graph Traversal<br/>Neptune cross-refs]
-            R7[Context Precision<br/>6-index relevance]
-            R8[Context Irrelevance<br/>No noise]
-            R9[Context Sufficiency<br/>Sufficient info]
-            R10[Distractor Presence<br/>No incorrect chunks]
-            R11[Context Utilization<br/>Active use]
-            R12[PII Leakage<br/>Zero taxpayer PII]
-            R13[Prompt Leakage<br/>No instruction leaks]
+            T4[Citation Accuracy<br/>Correct section numbers<br/>ATO ruling references]
         end
     end
 
@@ -447,6 +434,7 @@ graph TB
     SAFE --> S1
     SAFE --> S2
     SAFE --> S3
+    SAFE --> S4
 
     QUAL --> Q1
     QUAL --> Q2
@@ -460,25 +448,87 @@ graph TB
     TRUTH --> T3
     TRUTH --> T4
 
-    RAG --> R1
-    RAG --> R2
-    RAG --> R3
-    RAG --> R4
-    RAG --> R5
-    RAG --> R6
-    RAG --> R7
-    RAG --> R8
-    RAG --> R9
-    RAG --> R10
-    RAG --> R11
-    RAG --> R12
-    RAG --> R13
-
     style ALL fill:#9C27B0
     style SAFE fill:#F44336
     style QUAL fill:#4CAF50
     style TRUTH fill:#FF9800
     style RAG fill:#2196F3
+```
+
+**Note**: For detailed 6-index RAG/Retrieval metrics, see **Figure 7.2: 6-Index Retrieval Metrics** below.
+
+---
+
+### 7.2 6-Index Retrieval Metrics
+
+```mermaid
+graph TB
+    subgraph "6-Index RAG Evaluation Metrics - ATO Internal Context"
+        RAG[Retrieval/RAG Score]
+
+        subgraph "Per-Index Performance Metrics"
+            META[Metadata Index<br/>DynamoDB]
+            CITATION[Citation Index<br/>DynamoDB]
+            SEM[Semantic Index<br/>OpenSearch]
+            KW[Keyword Index<br/>OpenSearch]
+            CTX[Context Index<br/>OpenSearch]
+            GRAPH[Cross-Reference Index<br/>Neptune]
+        end
+
+        subgraph "Cross-Index Quality Metrics"
+            FUSION[RRF Fusion Quality<br/>Index combination<br/>Rank aggregation]
+            RERANK[Reranking Quality<br/>Claude Haiku performance<br/>Top-5 selection]
+            LATENCY[End-to-End Latency<br/>Target: <2s<br/>Breakdown by index]
+        end
+
+        subgraph "Context Quality Metrics"
+            R1[Context Precision<br/>6-index relevance]
+            R2[Context Irrelevance<br/>No noise across indices]
+            R3[Context Sufficiency<br/>Sufficient info for ATO decision]
+            R10[Distractor Presence<br/>No incorrect chunks]
+            R11[Context Utilization<br/>Active use of retrieved context]
+        end
+
+        subgraph "ATO Data Protection Metrics"
+            R12[PII Leakage<br/>Zero taxpayer PII<br/>ATO data governance]
+            R13[Prompt Leakage<br/>No instruction leaks<br/>System integrity]
+        end
+    end
+
+    RAG --> META
+    RAG --> CITATION
+    RAG --> SEM
+    RAG --> KW
+    RAG --> CTX
+    RAG --> GRAPH
+    RAG --> FUSION
+    RAG --> RERANK
+    RAG --> LATENCY
+    RAG --> R1
+    RAG --> R2
+    RAG --> R3
+    RAG --> R10
+    RAG --> R11
+    RAG --> R12
+    RAG --> R13
+
+    META --> M1[Filter Accuracy<br/>≥98%<br/>Document type matching]
+    CITATION --> C1[Exact Match Accuracy<br/>≥99%<br/>ITAA/ATO citations]
+    SEM --> S1[Vector Relevance<br/>≥90% precision<br/>Semantic similarity]
+    KW --> K1[BM25 Precision<br/>≥85%<br/>Tax term matching]
+    CTX --> C2[Parent Chunk Quality<br/>≥95% completeness<br/>Full provisions]
+    GRAPH --> G1[Graph Traversal<br/>≥90% accuracy<br/>Cross-reference expansion]
+
+    style RAG fill:#2196F3
+    style META fill:#4CAF50
+    style CITATION fill:#FF9800
+    style SEM fill:#9C27B0
+    style KW fill:#FFEB3B
+    style CTX fill:#4CAF50
+    style GRAPH fill:#9C27B0
+    style FUSION fill:#F44336
+    style RERANK fill:#FF5722
+    style LATENCY fill:#607D8B
 ```
 
 ### 7.2 Operational Metrics
