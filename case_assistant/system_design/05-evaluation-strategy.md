@@ -20,13 +20,18 @@
 
 ## 1. Overview
 
-Evaluation ensures the **Australian Tax Law AI system** produces accurate, trustworthy, and compliant outputs. Tax law AI requires a **defensive, attribution-first** approach where errors can result in incorrect tax advice, ATO penalties, or legal liability under Australian tax law.
+Evaluation ensures the **Australian Taxation Office (ATO) Internal AI System** produces accurate, trustworthy, and compliant outputs for **ATO professional use only**. This system is designed exclusively for **internal ATO operations** - assisting ATO officers, auditors, technical advisors, and policy makers in their official duties. Tax law AI requires a **defensive, attribution-first** approach where errors can result in incorrect ATO determinations, flawed audit decisions, or administrative errors under Australian tax law.
+
+**IMPORTANT**: This system is **NOT for taxpayer use**. It is an **internal ATO professional tool** for authorized ATO personnel only.
 
 **Domain Scope**: This system is designed **exclusively for Australian taxation law**:
 - **Legislation**: ITAA 1936, ITAA 1997, GST Act, FBTAA, Taxation Administration Act 1953
 - **ATO Rulings**: Taxation Rulings (TR), Determinations (TD), Product Rulings (PR)
 - **Case Law**: AAT decisions, Federal Court, High Court, Full Federal Court
 - **Administrative**: ATO Interpretative Decisions, ATO IDs, Law Administration Practice Statements
+- **ATO Internal**: ATO Practice Statements, Audit Manual, Compliance Guidelines
+
+**Intended Users**: ATO officers, auditors, technical advisors, policy officers, legal services branch - all authorized ATO personnel with appropriate access levels (GovTECH, ATO network).
 
 ---
 
@@ -34,13 +39,17 @@ Evaluation ensures the **Australian Tax Law AI system** produces accurate, trust
 
 | Aspect | General Chatbot | Australian Tax Law AI |
 |--------|----------------|------------------------|
-| **Error Impact** | User inconvenience | Incorrect tax advice, ATO penalties, legal liability |
+| **Primary User** | General public | **ATO officers, auditors, technical advisors (internal only)** |
+| **Use Case** | Informational | **ATO operational support, audit decisions, technical guidance** |
+| **Error Impact** | User inconvenience | **Incorrect ATO determinations, flawed audit decisions, administrative errors** |
 | **Attribution** | Optional | **Mandatory** (ITAA sections, ATO rulings, case citations required) |
-| **Accuracy** | ~80-90% acceptable | **≥95% required** (tax codes are precise) |
-| **Hallucinations** | Minor annoyance | **Zero tolerance** (cannot invent tax laws or case law) |
+| **Accuracy** | ~80-90% acceptable | **≥95% required** (ATO determinations must be legally sound) |
+| **Hallucinations** | Minor annoyance | **Zero tolerance** (cannot invent tax laws or misrepresent ATO positions) |
 | **Testing** | Basic QA tests | Multi-layered validation against Australian tax legislation |
 | **Citation Format** | Flexible | **Strict Australian legal citation** (ITAA 1997 s 6-5, TR 2022/1) |
 | **Jurisdiction** | Global | **Australia-only** (no foreign tax law) |
+| **Access Control** | Public | **ATO internal only (GovTECH, authorized personnel)** |
+| **Disclaimer Required** | No | **Yes - ATO internal use confirmation** |
 
 ---
 
@@ -51,7 +60,7 @@ graph TB
     subgraph "Evaluation Layers - Defense in Depth"
         T1[Tier 1: Automated Continuous<br/>Every commit<br/>Smoke tests, 6-index RAG quality<br/>CI/CD Pipeline]
         T2[Tier 2: Scheduled Batch<br/>Daily/Weekly<br/>Gold dataset, regression testing<br/>Evaluation Service: EKS]
-        T3[Tier 3: Manual Expert<br/>Monthly/Quarterly<br/>Australian tax legal accuracy<br/>Tax agents, lawyers, ATO officers]
+        T3[Tier 3: Manual Expert<br/>Monthly/Quarterly<br/>ATO operational accuracy<br/>ATO technical advisors, ATO lawyers, auditors]
     end
 
     T1 --> T2
@@ -68,7 +77,7 @@ graph TB
 |------|-----------|-------|-------|--------------|------------|
 | **Tier 1: Automated Continuous** | Every commit | Smoke tests, basic 6-index RAG quality | CI/CD Pipeline | 100% tests pass, precision ≥90% | GitHub Actions / CodeBuild |
 | **Tier 2: Scheduled Batch** | Daily (prod), Weekly (staging) | Gold dataset, regression testing, 6-index performance | Evaluation Service (EKS) | Precision ≥95%, recall ≥90%, retrieval latency <2s | EKS Cluster: CronJob |
-| **Tier 3: Manual Expert** | Monthly (prod), Quarterly (comprehensive) | Australian tax legal accuracy, edge cases, adversarial | Legal Professionals | Qualitative approval, zero critical findings | Manual review process |
+| **Tier 3: Manual Expert** | Monthly (prod), Quarterly (comprehensive) | ATO operational accuracy, audit decision support, technical guidance | ATO Technical Advisors, ATO Legal Services Branch, Senior Auditors | Qualitative approval, zero critical findings for ATO operations | Manual review process |
 
 ---
 
@@ -107,13 +116,14 @@ graph TB
 | Characteristic | Value | Australian Context |
 |----------------|-------|-------------------|
 | **Total Documents** | 500 Australian tax law documents | ITAA 1936, ITAA 1997, GST Act, FBTAA |
-| **Test Cases** | ~1,500 (3 per document) | Australian tax scenarios |
-| **Tax Law Domains** | Federal tax legislation, ATO rulings, AAT/Federal Court cases | No state payroll tax, no foreign tax law |
-| **Document Types** | ITAA sections, GST Act provisions, ATO rulings (TR/TD), AAT decisions, Federal Court cases, ATO IDs | |
-| **Complexity Levels** | Simple (40%), Medium (40%), Complex (20%) | Based on legal complexity |
-| **Annotation** | 100% human-verified by Australian tax professionals | Tax agents, CA ANZ/CPA Australia members |
-| **Ground Truth Facts** | ~10,000 facts (ITAA sections, ATO ruling references, case citations, tax amounts, deadlines, GST rates) | Australian-specific |
+| **Test Cases** | ~1,500 (3 per document) | ATO operational scenarios |
+| **Tax Law Domains** | Federal tax legislation, ATO rulings, AAT/Federal Court cases, ATO internal guidance | No state payroll tax, no foreign tax law |
+| **Document Types** | ITAA sections, GST Act provisions, ATO rulings (TR/TD), AAT decisions, Federal Court cases, ATO IDs, ATO Practice Statements | |
+| **Complexity Levels** | Simple (40%), Medium (40%), Complex (20%) | Based on ATO operational complexity |
+| **Annotation** | 100% human-verified by ATO technical advisors and legal services | ATO officers with subject matter expertise |
+| **Ground Truth Facts** | ~10,000 facts (ITAA sections, ATO ruling references, case citations, tax amounts, deadlines, GST rates, ATO positions) | ATO-specific operational facts |
 | **Citation Format** | Strict Australian legal citation | ITAA 1997 s 6-5, TR 2022/D1, [2023] AATA 123 |
+| **Use Case Focus** | ATO internal operations | Audit support, technical guidance, policy research |
 
 ### 4.3 Document Type Distribution
 
@@ -121,6 +131,7 @@ graph TB
 |---------------|-------|----------|------------|
 | **Legislation** | 150 | ITAA 1997 s 6-5, GST Act s 9-5, FBTAA s 39 | 450 |
 | **ATO Rulings** | 150 | TR 2022/1, TD 2022/1, PR 2022/1 | 450 |
+| **ATO Internal** | 50 | ATO Practice Statements, Audit Manual chapters, Compliance Guidelines | 150 |
 | **AAT Decisions** | 100 | [2023] AATA 123, [2022] AATA 456 | 300 |
 | **Federal Court Cases** | 75 | FCA 123, [2023] FCA 456 | 225 |
 | **High Court Cases** | 25 | CLR 123, [2022] HCA 45 | 75 |
@@ -193,17 +204,20 @@ graph TB
 #### 1. Safety Evaluation
 - **Scope Adherence**: Does response stay within Australian tax law domain (ITAA, ATO rulings, case law)?
 - **Jurisdiction Check**: No foreign tax law (no IRS, no UK HMRC, no foreign systems)
-- **Bias & Harm**: Detect harmful bias in Australian tax advice
-- **Tax Advice Boundaries**: Ensure appropriate disclaimers (not professional tax advice, consult tax agent)
-- **Sensitive Topics**: Handle ATO audits, penalties, tax debt appropriately for Australian context
+- **Bias & Harm**: Detect harmful bias in tax administration guidance
+- **ATO Position Accuracy**: Ensure responses align with current ATO positions and practices
+- **Operational Boundaries**: Ensure appropriate disclaimers (ATO internal use, not binding advice)
+- **Sensitive Topics**: Handle audit decisions, penalty determinations, taxpayer data appropriately
+- **Access Control Confirmation**: System confirms ATO internal use only
 
 #### 2. Quality Evaluation
-- **Relevance**: Directly relevant to user's Australian tax question
-- **Tone/Persona**: Professional, empathetic, Australian tax-appropriate
-- **Accuracy**: Australian-tax-law-sound advice (ITAA citations, ATO ruling references)
-- **Clarity**: Understandable to non-tax professionals (Australian taxpayers)
-- **Completeness**: Addresses user's Australian tax question fully
+- **Relevance**: Directly relevant to ATO officer's query or operational need
+- **Tone/Persona**: Professional, authoritative, appropriate for ATO internal use
+- **Accuracy**: Australian-tax-law-sound information (ITAA citations, ATO ruling references, case law)
+- **Clarity**: Clear and actionable for ATO officers (technical when needed, explanatory for complex topics)
+- **Completeness**: Fully addresses the ATO operational question or scenario
 - **Citation Format**: Correct Australian legal citation (ITAA 1997 s 6-5, not IRC § 61)
+- **ATO Alignment**: Responses align with current ATO practice statements and audit methodologies
 
 #### 3. Truthfulness Evaluation
 - **Hallucination Detection** (3 types):
@@ -471,21 +485,24 @@ graph TB
 
 | Metric | Target | Rationale |
 |--------|--------|-----------|
-| **Session Creation Success** | ≥99.9% | Core functionality must work |
-| **Query Response Time (p95)** | <3 seconds | User experience for Australian tax queries |
-| **6-Index Retrieval Latency (p95)** | <2 seconds | Multi-index search performance |
-| **Document Ingestion Success** | ≥99% | Users must be able to upload Australian tax documents |
-| **Citation Accuracy** | ≥99% | Correct ITAA/ATO/case citations mandatory |
+| **Session Creation Success** | ≥99.9% | Core functionality must work for ATO operations |
+| **Query Response Time (p95)** | <3 seconds | ATO officer experience during operational work |
+| **6-Index Retrieval Latency (p95)** | <2 seconds | Multi-index search performance for time-sensitive audits |
+| **Document Ingestion Success** | ≥99% | ATO officers must be able to upload Australian tax documents |
+| **Citation Accuracy** | ≥99% | Correct ITAA/ATO/case citations mandatory for ATO decisions |
+| **ATO Position Alignment** | ≥95% | Responses must align with current ATO practice and policy |
 
-### 7.3 Compliance Metrics (Australian Context)
+### 7.3 Compliance Metrics (ATO Internal Context)
 
 | Metric | Target | Rationale |
 |--------|--------|-----------|
-| **Data Deletion Compliance** | 100% | Australian Privacy Act 1988 requirements |
-| **Session Isolation** | 100% | Security requirement (taxpayer data protection) |
-| **PII Leakage** | 0 incidents | Australian taxpayer privacy requirement |
+| **Data Deletion Compliance** | 100% | Australian Privacy Act 1988 + ATO data governance requirements |
+| **Session Isolation** | 100% | Security requirement (taxpayer data protection, ATO network security) |
+| **PII Leakage** | 0 incidents | Australian taxpayer privacy requirement + ATO security protocols |
 | **Citation Format Compliance** | 100% | Australian legal citation standard |
 | **Scope Adherence** | 100% | Australian tax law only (no foreign law) |
+| **Access Control** | 100% | ATO internal network only, authorized personnel only |
+| **ATO Use Confirmation** | 100% | System confirms ATO internal use on every interaction |
 
 ---
 
@@ -578,77 +595,79 @@ graph TB
 
 ## 9. Test Case Categories
 
-### 9.1 Query Types (Australian Tax Law Context)
+### 9.1 Query Types (ATO Operational Context)
 
 | Query Type | Description | Example | Evaluation Focus |
 |------------|-------------|---------|------------------|
-| **Fact Extraction** | Extract specific Australian tax facts | "What are the key tax dates in TR 2022/1?" | Precision, Recall, Citation accuracy |
-| **Summary** | Document summary | "Summarize this AAT decision on GST" | Completeness, Accuracy, Australian context |
-| **Cross-Document** | Multi-document queries | "Compare ITAA 1997 s 6-5 with s 8-1" | Synthesis, Citations, Cross-reference accuracy |
-| **Tax Law Reasoning** | Australian tax analysis | "What are the requirements for GST registration under s 23-5?" | Tax accuracy, ITAA citation, ATO ruling references |
-| **Adversarial** | Edge cases, attacks | "What if I don't report this capital gain?" | Robustness, Hallucinations, Appropriate disclaimers |
-| **Citation Lookup** | Exact citation queries | "What does ITAA 1997 s 288-95 say about penalties?" | Citation Index accuracy, Exact match |
-| **Definition Queries** | Tax term definitions | "Define 'taxable supply' under GST Act" | Graph traversal, Definition accuracy |
-| **Case Law Queries** | AAT/Federal Court case queries | "What did the AAT decide in [2023] AATA 123?" | Case law accuracy, Citation format |
+| **Fact Extraction** | Extract specific Australian tax facts for ATO operations | "What are the key tax dates in TR 2022/1 for this audit?" | Precision, Recall, Citation accuracy |
+| **Summary** | Document summary for ATO review | "Summarize this AAT decision on GST for audit consideration" | Completeness, Accuracy, ATO relevance |
+| **Cross-Document** | Multi-document queries for complex cases | "Compare ITAA 1997 s 6-5 with s 8-1 implications for this taxpayer" | Synthesis, Citations, Cross-reference accuracy |
+| **Tax Law Reasoning** | Australian tax analysis for ATO decisions | "What are the requirements for GST registration under s 23-5 for this business?" | Tax accuracy, ITAA citation, ATO ruling references |
+| **Operational Guidance** | ATO operational procedure queries | "What is the correct ATO process for addressing this penalty situation?" | ATO position alignment, Procedural accuracy |
+| **Citation Lookup** | Exact citation queries for legal research | "What does ITAA 1997 s 288-95 say about penalties?" | Citation Index accuracy, Exact match |
+| **Definition Queries** | Tax term definitions for ATO interpretation | "Define 'taxable supply' under GST Act for ATO guidance" | Graph traversal, Definition accuracy |
+| **Case Law Queries** | AAT/Federal Court case queries for ATO decisions | "What did the AAT decide in [2023] AATA 123 and how does it impact this audit?" | Case law accuracy, Citation format |
+| **ATO Position Queries** | Current ATO practice and policy | "What is the current ATO position on SMSF non-arm's length income?" | ATO Practice Statement alignment, Current policy |
 
-### 9.2 Australian Tax Law Specific Test Cases
+### 9.2 ATO Operational Test Cases
 
 | Category | Test Case | Expected Behavior |
 |----------|-----------|-------------------|
-| **ITAA Citation** | "What are the penalties under ITAA 1997 s 288-95?" | Exact match from Citation Index, correct penalty amounts |
-| **ATO Ruling** | "Explain TR 2022/D1 on fringe benefits" | Retrieve from ATO ruling, accurate summary |
-| **AAT Decision** | "What was the outcome in [2023] AATA 456?" | Case law retrieved, accurate summary |
-| **GST Query** | "How does GST apply to this transaction under s 9-5?" | GST Act provision retrieved, application explained |
-| **Cross-Reference** | "What is the definition of 'entity' in ITAA 1997?" | Graph traversal to s 960-20, definition retrieved |
-| **FBT Query** | "What are the FBT implications under FBTAA s 39?" | FBTAA provision retrieved, FBT explained |
-| **Legislation Comparison** | "How does ITAA 1997 s 6-5 differ from s 8-1?" | Both provisions retrieved, comparison accurate |
+| **ITAA Citation** | "What are the penalty provisions under ITAA 1997 s 288-95 for this audit?" | Exact match from Citation Index, correct penalty amounts, audit-relevant |
+| **ATO Ruling** | "Explain TR 2022/D1 on fringe benefits for technical guidance" | Retrieve from ATO ruling, accurate summary, technical detail |
+| **AAT Decision** | "What was the AAT outcome in [2023] AATA 456 and implications for our case?" | Case law retrieved, accurate summary, relevance assessment |
+| **GST Query** | "How does GST apply under s 9-5 to this transaction type?" | GST Act provision retrieved, application explained, ATO position |
+| **Cross-Reference** | "What is the definition of 'entity' in ITAA 1997 and how does it impact this case?" | Graph traversal to s 960-20, definition retrieved, case application |
+| **FBT Query** | "What are the FBT implications under FBTAA s 39 for this employer?" | FBTAA provision retrieved, FBT explained, ATO guidance |
+| **Legislation Comparison** | "How do ITAA 1997 s 6-5 and s 8-5 interact for this taxpayer scenario?" | Both provisions retrieved, comparison accurate, interaction analysis |
+| **ATO Practice** | "What is the ATO's current position on Part IVA in these circumstances?" | ATO Practice Statement references, current position, risk assessment |
 
 ---
 
 ## 10. Persona-Driven Stress Testing
 
-**Concept**: Simulate different Australian taxpayer communication styles to test system robustness and adaptability.
+**Concept**: Simulate different ATO professional roles and communication styles to test system robustness and adaptability for internal ATO operations.
 
-### 10.1 Australian Tax Law Personas
+### 10.1 ATO Professional Personas
 
 ```mermaid
 graph TB
-    subgraph "Persona-Driven Testing - Australian Context"
-        PERSONA[Select User Persona]
+    subgraph "Persona-Driven Testing - ATO Internal Context"
+        PERSONA[Select ATO Professional Persona]
 
-        subgraph "Australian Tax Law User Personas"
-            STRESS[Stressed Taxpayer<br/>Emotional, urgent<br/>ATO audit notice received]
-            TAX_AGENT[Registered Tax Agent<br/>Precise, technical<br/>Complex tax questions<br/>TPRN holder]
-            INDIV[Individual Taxpayer<br/>Non-tax background<br/>Confused by tax jargon]
-            LAWYER[Tax Lawyer<br/>Formal, specific<br/>Federal Court procedures<br/>High Court citations]
-            ATO_OFFICER[ATO Officer/Auditor<br/>Procedural focus<br/>Compliance checking<br/>APCA holder]
-            CPA[CPA Australia Member<br/>Professional<br/>Financial reporting<br/>Tax agent queries]
-            BUSINESS[Small Business Owner<br/>GST, PAYG withholding<br/>BAS queries<br/>Time-poor]
-            PENSION[Self-Funded Retiree<br/>Investment income<br/>Superannuation<br/>Tax-free threshold]
+        subgraph "ATO Internal User Personas"
+            AUDITOR[ATO Auditor<br/>Field audits, compliance reviews<br/>Evidence gathering<br/>Audit determinations]
+            TECH_ADVISOR[ATO Technical Advisor<br/>Complex technical queries<br/>Ruling interpretation<br/>Policy research]
+            POLICY[ATO Policy Officer<br/>Policy development<br/>Legislative analysis<br/>Impact assessment]
+            LEGAL[ATO Legal Services<br/>Legal advice branch<br/>Case law analysis<br/>Risk assessment]
+            SENIOR_AUDITOR[Senior Auditor<br/>Team leadership<br/>Review and sign-off<br/>Complex cases]
+            GRADUATE[ATO Graduate/Trainee<br/>Learning role<br/>Basic queries<br/>Mentor support]
+            CALL_CENTER[ATO Call Centre Officer<br/>Phone inquiries<br/>Standard responses<br/>High volume]
+            COMPLIANCE[Compliance Officer<br/>Risk assessment<br/>Data matching<br/>Intelligence gathering]
         end
 
-        SCENARIO[Apply to Test Scenarios<br/>Fact extraction<br/>Document analysis<br/>Legal reasoning<br/>Australian tax context]
+        SCENARIO[Apply to Test Scenarios<br/>ATO operational queries<br/>Audit support<br/>Technical guidance<br/>Policy research]
 
-        EVAL[Persona-Specific Evaluation<br/>Tone appropriateness<br/>Clarity for persona<br/>Handling style<br/>Australian tax accuracy]
+        EVAL[Persona-Specific Evaluation<br/>Tone appropriateness<br/>Clarity for persona<br/>Technical depth<br/>ATO operational accuracy]
     end
 
-    PERSONA --> STRESS
-    PERSONA --> TAX_AGENT
-    PERSONA --> INDIV
-    PERSONA --> LAWYER
-    PERSONA --> ATO_OFFICER
-    PERSONA --> CPA
-    PERSONA --> BUSINESS
-    PERSONA --> PENSION
+    PERSONA --> AUDITOR
+    PERSONA --> TECH_ADVISOR
+    PERSONA --> POLICY
+    PERSONA --> LEGAL
+    PERSONA --> SENIOR_AUDITOR
+    PERSONA --> GRADUATE
+    PERSONA --> CALL_CENTER
+    PERSONA --> COMPLIANCE
 
-    STRESS --> SCENARIO
-    TAX_AGENT --> SCENARIO
-    INDIV --> SCENARIO
-    LAWYER --> SCENARIO
-    ATO_OFFICER --> SCENARIO
-    CPA --> SCENARIO
-    BUSINESS --> SCENARIO
-    PENSION --> SCENARIO
+    AUDITOR --> SCENARIO
+    TECH_ADVISOR --> SCENARIO
+    POLICY --> SCENARIO
+    LEGAL --> SCENARIO
+    SENIOR_AUDITOR --> SCENARIO
+    GRADUATE --> SCENARIO
+    CALL_CENTER --> SCENARIO
+    COMPLIANCE --> SCENARIO
 
     SCENARIO --> EVAL
 
@@ -656,48 +675,47 @@ graph TB
     style EVAL fill:#FF9800
 ```
 
-### 10.2 Persona Definitions for Australian Tax Law AI
+### 10.2 Persona Definitions for ATO Internal System
 
 | Persona | Communication Style | Tests |
 |---------|---------------------|-------|
-| **Stressed Taxpayer** | Emotional, rushed, typos, incomplete | Can system extract facts from ATO audit notice? |
-| **Registered Tax Agent** | Precise, tax terminology, complex, TPRN references | Can system handle technical Australian tax questions? |
-| **Individual Taxpayer** | Non-tax background, confused by jargon | Can system explain tax concepts simply? |
-| **Tax Lawyer** | Formal, specific, Federal Court procedures | Does system provide proper procedural guidance? |
-| **ATO Officer/Auditor** | Procedural focus, compliance checking | Does system handle audit-related queries accurately? |
-| **CPA Australia Member** | Professional, financial reporting focus | Can system handle accounting tax queries? |
-| **Small Business Owner** | Time-poor, GST/BAS focus | Can system provide quick BAS answers? |
-| **Self-Funded Retiree** | Investment income, superannuation focus | Can system handle retirement tax queries? |
-| **Efficient User** | Brief, direct, minimal context | Can system work with minimal information? |
-| **Verbose User** | Long-winded, story-telling | Can system extract key tax facts from narrative? |
-| **Skeptical User** | Challenging, adversarial | Does system maintain composure and accuracy? |
-| **Multi-Document User** | References many Australian tax forms/cases | Can system synthesize across documents? |
-| **Follow-up User** | Asks series of related tax questions | Does system maintain context? |
+| **ATO Auditor** | Operational, evidence-focused, procedural | Can system support audit decision-making with accurate legal references? |
+| **ATO Technical Advisor** | Highly technical, precise, research-oriented | Can system handle complex technical queries across ITAA, ATO rulings, case law? |
+| **ATO Policy Officer** | Analytical, forward-looking, impact-focused | Can system support policy development with legislative analysis? |
+| **ATO Legal Services** | Formal, precise, precedent-focused | Does system provide accurate case law analysis and risk assessment? |
+| **Senior Auditor** | Strategic, review-focused, sign-off responsibility | Can system support review and sign-off processes with comprehensive information? |
+| **ATO Graduate/Trainee** | Learning-oriented, foundational questions | Can system provide educational explanations with proper context? |
+| **ATO Call Centre Officer** | High-volume, standard responses, time-pressured | Can system provide quick, accurate answers for common taxpayer inquiries? |
+| **Compliance Officer** | Data-driven, risk-focused, intelligence-gathering | Can system support risk assessment and compliance research? |
+| **Efficient Officer** | Brief, direct, minimal context | Can system work with minimal operational context? |
+| **Detailed Officer** | Comprehensive, thorough, multiple considerations | Can system handle complex multi-factor scenarios? |
+| **Skeptical Officer** | Challenging, verification-focused | Does system maintain accuracy under scrutiny? |
+| **Multi-Area Officer** | Cross-domain queries (income tax, GST, FBT) | Can system synthesize across different tax domains? |
 
-### 10.3 Example Persona Tests (Australian Context)
+### 10.3 Example Persona Tests (ATO Internal Context)
 
 | Persona | User Query | System Should |
 |---------|-----------|--------------|
-| **Stressed Taxpayer** | "I got an ATO audit notice wat do I do HELP" | Calm response, extract notice details, explain ATO audit process |
-| **Tax Agent** | "What are the CGT discount implications under ITAA 1997 s 115-45 for small business?" | Technical tax analysis, precise ITAA citation, small business CGT concessions |
-| **Individual** | "I don't understand 'taxable supply' - what is it?" | Simple explanation, examples, plain English, GST Act reference |
-| **Tax Lawyer** | "Cite controlling precedent for the taxation of income in non-resident trusts, FCA" | Formal response, precise Federal Court citations, [202X] FCA format |
-| **ATO Officer** | "What documentation supports this PAYG withholding variation?" | Procedural response, ATO documentation requirements, compliance standards |
-| **CPA** | "How does the Taxation Ruling TR 2022/1 impact financial reporting for deferred tax assets?" | Professional response, AASB 112 references, TR 2022/1 analysis |
-| **Business Owner** | "When is my BAS due and how do I report GST?" | Quick answer, BAS dates, GST reporting steps, ATO references |
-| **Self-Funded Retiree** | "What's the tax-free threshold for investment income?" | Clear explanation, tax-free threshold, offset information |
+| **ATO Auditor** | "What are the penalty provisions under ITAA 1997 s 288-95 for late BAS lodgment in this audit case?" | Accurate penalty provisions, audit-relevant case law, ATO position on application |
+| **Technical Advisor** | "Explain the interaction between ITAA 1997 s 6-5 and TR 2022/D1 regarding non-arm's length income for SMSFs" | Technical analysis, ruling interpretation, interaction effects, relevant case law |
+| **Policy Officer** | "What legislative changes would be required to implement a new small business concession under ITAA 1997?" | Legislative analysis, current framework, impact assessment, relevant precedents |
+| **ATO Legal** | "Cite Federal Court precedent on the 'discount capital gain' definition and analyze AAT alignment" | Accurate case law citations, precedent analysis, jurisdictional considerations |
+| **Senior Auditor** | "Summarize the taxpayer's position across income tax, GST, and FBT for this complex audit" | Cross-domain synthesis, risk areas, evidentiary requirements |
+| **ATO Graduate** | "What is the difference between a Taxation Ruling (TR) and Taxation Determination (TD)?" | Clear explanation, hierarchy differences, when each applies |
+| **Call Centre Officer** | "What are the current BAS lodgment deadlines and penalties for late lodgment?" | Quick accurate answer, current dates, penalty references |
+| **Compliance Officer** | "What are the high-risk indicators for GST fraud according to recent ATO intelligence?" | Risk indicators, legislative basis, case law examples, ATO guidance |
 
 ---
 
 ## 11. Compliance Evaluation
 
-Australian tax law AI systems must validate compliance requirements under Australian law.
+ATO internal tax law AI systems must validate compliance requirements under Australian law and ATO governance frameworks.
 
 ### 11.1 Compliance Framework
 
 ```mermaid
 graph TB
-    subgraph "Compliance Evaluation - Australian Context"
+    subgraph "Compliance Evaluation - ATO Internal Context"
         COMP[Compliance Tests]
 
         subgraph "Data Deletion"
@@ -709,43 +727,59 @@ graph TB
         end
 
         subgraph "PII Protection"
-            PII[PII Scan Test<br/>Scan responses for taxpayer PII<br/>Zero leaks allowed<br/>Redaction validation<br/>TFN exclusion checks]
+            PII[PII Scan Test<br/>Scan responses for taxpayer PII<br/>Zero leaks allowed<br/>Redaction validation<br/>TFN exclusion checks<br/>ATO data governance compliance]
         end
 
         subgraph "Jurisdiction Compliance"
-            JURIS[Jurisdiction Test<br/>Australian tax law only<br/>No foreign tax references<br/>ATO compliance<br/>Australian Privacy Act 1988]
+            JURIS[Jurisdiction Test<br/>Australian tax law only<br/>No foreign tax references<br/>ATO position alignment<br/>Australian Privacy Act 1988<br/>ATO Security Policy]
         end
 
-        REPORT[Compliance Report<br/>Pass/Fail each test<br/>100% required for compliance<br/>Australian legal requirements]
+        subgraph "Access Control"
+            ACCESS[Access Control Test<br/>ATO network only<br/>Authorized personnel only<br/>GovTECH compliance<br/>ATO authentication required]
+        end
+
+        subgraph "ATO Use Confirmation"
+            ATO_USE[ATO Use Test<br/>System confirms ATO internal use<br/>Not for taxpayer access<br/>ATO internal disclaimers<br/>Operational boundaries]
+        end
+
+        REPORT[Compliance Report<br/>Pass/Fail each test<br/>100% required for compliance<br/>Australian legal requirements<br/>ATO governance requirements]
     end
 
     COMP --> DEL
     COMP --> ISO
     COMP --> PII
     COMP --> JURIS
+    COMP --> ACCESS
+    COMP --> ATO_USE
 
     DEL --> REPORT
     ISO --> REPORT
     PII --> REPORT
     JURIS --> REPORT
+    ACCESS --> REPORT
+    ATO_USE --> REPORT
 
     style DEL fill:#4CAF50
     style ISO fill:#FF9800
     style PII fill:#F44336
     style JURIS fill:#9C27B0
+    style ACCESS fill:#2196F3
+    style ATO_USE fill:#FFEB3B
 ```
 
-### 11.2 Compliance Requirements (Australian)
+### 11.2 Compliance Requirements (ATO Internal)
 
-| Requirement | Test Method | Pass Criteria | Australian Legal Basis |
+| Requirement | Test Method | Pass Criteria | Legal/Governance Basis |
 |-------------|-------------|---------------|------------------------|
-| **Data Deletion** | Delete session, verify cleanup | 0 vectors, 0 documents, 0 metadata remain | Australian Privacy Act 1988 |
-| **Session Isolation** | Cross-session queries | 0% data leakage between sessions | Taxation Administration Act 1953 |
-| **PII Protection** | PII scan on responses | 0 PII leaks (excluding TFN if appropriately handled) | Privacy Act 1988, TFN Rules |
-| **Retention Policy** | Verify 7-day document TTL | Documents auto-deleted after inactivity | Data minimization principle |
+| **Data Deletion** | Delete session, verify cleanup | 0 vectors, 0 documents, 0 metadata remain | Australian Privacy Act 1988, ATO Data Governance |
+| **Session Isolation** | Cross-session queries | 0% data leakage between sessions | Taxation Administration Act 1953, ATO Security Policy |
+| **PII Protection** | PII scan on responses | 0 PII leaks (excluding TFN if appropriately handled) | Privacy Act 1988, TFN Rules, ATO Data Governance |
+| **Retention Policy** | Verify 7-day document TTL | Documents auto-deleted after inactivity | ATO Records Management Policy |
 | **Jurisdiction Scope** | Scan for foreign tax references | 0 foreign tax law references (IRS, UK, etc.) | System scope limitation |
-| **Citation Accuracy** | Validate ITAA/ATO/case citations | 100% accurate citations, correct format | Legal professional standards |
-| **Tax Advice Disclaimer** | Verify appropriate disclaimers | Professional tax advice disclaimer present | Tax Agent Services Act 2009 |
+| **Citation Accuracy** | Validate ITAA/ATO/case citations | 100% accurate citations, correct format | ATO legal professional standards |
+| **Access Control** | Verify ATO network access | 100% ATO network/authenticated access only | ATO Security Policy, GovTECH requirements |
+| **ATO Use Confirmation** | Verify ATO internal disclaimers | 100% confirm ATO internal use | ATO governance, operational boundaries |
+| **ATO Position Alignment** | Verify alignment with ATO policy | ≥95% alignment with current ATO positions | ATO Practice Statements, Audit Manual |
 
 ---
 
@@ -907,8 +941,10 @@ Alerts:
 
 ---
 
-**Document Version**: 2.0.0
-**Last Updated**: 2026-03-25
+**Document Version**: 3.0.0
+**Last Updated**: 2026-03-27
 **Author**: Case Assistant Architecture Team
 **Status**: Production Architecture Specification
 **Domain**: Australian Taxation Law (100%)
+**Intended Use**: ATO Internal Only - Authorized ATO Personnel
+**Access Level**: GovTECH / ATO Network Only
