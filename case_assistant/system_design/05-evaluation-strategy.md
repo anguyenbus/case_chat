@@ -230,12 +230,12 @@ graph TB
 
 #### 4. Retrieval/RAG Evaluation (6-Index Specific)
 - **Context Precision**: Enough relevant information retrieved from 6 indices
-- **Citation Match Quality**: DynamoDB Citation Index accuracy for exact matches
+- **Citation Match Quality**: OpenSearch Citation Index accuracy for exact matches
 - **Semantic Search Quality**: OpenSearch Semantic Index relevance
 - **Keyword Search Quality**: OpenSearch Keyword Index (BM25) tax term matching
 - **Parent Chunk Utilization**: OpenSearch Context Index providing full provisions
 - **Graph Traversal Quality**: Neptune Cross-Reference Index expansion effectiveness
-- **Metadata Filtering**: DynamoDB Metadata Index filtering correctness (document type, year)
+- **Metadata Filtering**: OpenSearch Metadata Index filtering correctness (document type, year)
 - **Context Irrelevance**: No significant irrelevant chunks from any index
 - **Context Sufficiency**: Information sufficient for complete Australian tax answer
 - **Distractor Presence**: No semantically similar but incorrect chunks (e.g., similar sections in different acts)
@@ -276,8 +276,8 @@ graph TB
         ALL[Overall RAG Quality Score]
 
         subgraph "Index-Specific Metrics"
-            META[Metadata Index<br/>DynamoDB<br/>Filter Accuracy]
-            CITATION[Citation Index<br/>DynamoDB<br/>Exact Match Accuracy]
+            META[Metadata Index<br/>OpenSearch<br/>Filter Accuracy]
+            CITATION[Citation Index<br/>OpenSearch<br/>Exact Match Accuracy]
             SEM[Semantic Index<br/>OpenSearch<br/>Vector Relevance]
             KW[Keyword Index<br/>OpenSearch<br/>BM25 Precision]
             CTX[Context Index<br/>OpenSearch<br/>Parent Chunk Quality]
@@ -467,8 +467,8 @@ graph TB
         RAG[Retrieval/RAG Score]
 
         subgraph "Per-Index Performance Metrics"
-            META[Metadata Index<br/>DynamoDB]
-            CITATION[Citation Index<br/>DynamoDB]
+            META[Metadata Index<br/>OpenSearch]
+            CITATION[Citation Index<br/>OpenSearch]
             SEM[Semantic Index<br/>OpenSearch]
             KW[Keyword Index<br/>OpenSearch]
             CTX[Context Index<br/>OpenSearch]
@@ -568,8 +568,8 @@ graph TB
         QUERY[User Query<br/>Australian tax question]
 
         subgraph "6-Index System Processing"
-            META[Metadata Filter<br/>DynamoDB]
-            CIT[Citation Match<br/>DynamoDB]
+            META[Metadata Filter<br/>OpenSearch]
+            CIT[Citation Match<br/>OpenSearch]
             SEM[Semantic Search<br/>OpenSearch]
             KW[Keyword Search<br/>OpenSearch]
             CTX[Context Fetch<br/>OpenSearch]
@@ -769,7 +769,7 @@ graph TB
         COMP[Compliance Tests]
 
         subgraph "Data Deletion"
-            DEL[Delete Session Test<br/>Verify vectors removed from 6 indices<br/>Verify documents deleted from S3<br/>Verify metadata purged from DynamoDB<br/>Verify graph nodes removed from Neptune]
+            DEL[Delete Session Test<br/>Verify vectors removed from 6 indices<br/>Verify documents deleted from S3<br/>Verify metadata purged from OpenSearch<br/>Verify session deleted from Redis<br/>Verify graph nodes removed from Neptune]
         end
 
         subgraph "Session Isolation"
