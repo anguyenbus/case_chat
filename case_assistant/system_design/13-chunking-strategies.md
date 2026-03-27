@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-The Case Assistant system employs a **simplified 2-index architecture** that consolidates the original 6-index approach into two highly optimized OpenSearch Serverless indices. This simplified design maintains all critical functionality while reducing infrastructure complexity by 67% and improving query latency by 10-30%.
+The Case Assistant system employs a **simplified 2-index architecture** that consolidates the original 6-index approach into two highly optimized OpenSearch indices. This simplified design maintains all critical functionality while reducing infrastructure complexity by 67% and improving query latency by 10-30%.
 
 ```mermaid
 graph LR
@@ -29,6 +29,23 @@ graph LR
     P2 --> IDX2
 ```
 
+### OpenSearch Deployment Model
+
+**Important**: The architecture supports two deployment models for OpenSearch:
+
+| Deployment Model | Description | When to Use |
+|-----------------|-------------|-------------|
+| **Provisioned Domain** | Fixed-capacity OpenSearch clusters with dedicated instances | Predictable workloads, need consistent performance, cost optimization at scale |
+| **OpenSearch Serverless** | Pay-per-use automatic scaling with OCUs | Variable workloads, want to eliminate capacity planning, pay only for what you use |
+
+**Current Status**: The team is evaluating which deployment model best suits our requirements (subject to discussion). The chunking strategy and index design remain identical regardless of deployment choice.
+
+**Key Considerations**:
+- **Provisioned**: Better cost control at high volumes (~$424/month for production cluster)
+- **Serverless**: Better for variable workloads and zero operational overhead (~$220/month estimated)
+- Both support k-NN vector search, BM25, and hybrid queries
+- Index schemas and query patterns are identical between deployment models
+
 ### Key Improvements Over Original Design
 
 | Aspect | Original (6-Index) | Simplified (2-Index) | Improvement |
@@ -41,23 +58,40 @@ graph LR
 | **Metadata Filtering** | Separate Metadata Index | Fields in Unified Index | Native filter context |
 | **Cross-References** | Neptune Graph Database | Array fields in Citation Index | Phase 2 optimization |
 | **Query Latency** | 150-200ms (hybrid) | 120-140ms (hybrid) | -20% improvement |
-| **Ingestion Cost** | $1,000 per 1M docs | $650 per 1M docs | -35% cost reduction |
+| **Infrastructure Cost** | $467/month | $247/month | -47% cost reduction |
 
 ---
 
 ## Database Technology Selection
 
-### OpenSearch Serverless-First Architecture
+### OpenSearch-First Architecture
 
-**Executive Summary**: The simplified RAG architecture uses **Amazon OpenSearch Serverless** for all retrieval needs, with **ElastiCache Redis** for session management. OpenSearch provides native support for vector search, keyword search, metadata filtering, and parent-child relationships in a single unified platform.
+**Executive Summary**: The simplified RAG architecture uses **Amazon OpenSearch Service** for all retrieval needs, with **ElastiCache Redis** for session management. OpenSearch provides native support for vector search (k-NN), keyword search, metadata filtering, and parent-child relationships in a single unified platform.
+
+**Note**: The architecture supports both provisioned OpenSearch domains and OpenSearch Serverless. The team is currently evaluating which deployment model best suits our requirements (subject to discussion).
 
 | Index | Access Pattern | Technology | Rationale |
 |-------|---------------|------------|-----------|
-| **Citation Index** | Exact match + cross-reference lookup | **OpenSearch Serverless** | Keyword fields with alias arrays, cross-reference arrays |
-| **Unified Legal Index** | Hybrid vector + BM25 + metadata filtering | **OpenSearch Serverless** | Native hybrid search with parent-child support |
+| **Citation Index** | Exact match + cross-reference lookup | **OpenSearch** | Keyword fields with alias arrays, cross-reference arrays |
+| **Unified Legal Index** | Hybrid vector + BM25 + metadata filtering | **OpenSearch** | Native hybrid search with parent-child support (k-NN plugin) |
 | **Session Store** | Hot session data | **ElastiCache Redis** | Sub-millisecond latency, built-in TTL |
 
-**Key Insight**: OpenSearch Serverless supports vector similarity (k-NN), BM25 keyword search, and structured filtering in a single query, eliminating the need for separate indices.
+**Key Insight**: OpenSearch with the k-NN plugin supports vector similarity, BM25 keyword search, and structured filtering in a single query, eliminating the need for separate indices.
+
+### OpenSearch Features by Deployment Model
+
+| Feature | Provisioned Domain | OpenSearch Serverless | Notes |
+|---------|-------------------|----------------------|-------|
+| **k-NN Vector Search** | ✅ Enabled via plugin | ✅ Built-in | Same API and performance |
+| **BM25 Keyword Search** | ✅ Built-in | ✅ Built-in | Identical functionality |
+| **Hybrid Queries** | ✅ Vector + BM25 in single query | ✅ Vector + BM25 in single query | Same query structure |
+| **Parent-Child Joins** | ✅ Has-child/has-join queries | ✅ Has-child/has-join queries | Same implementation |
+| **Metadata Filtering** | ✅ Filter context | ✅ Filter context | Same performance |
+| **Auto-scaling** | Manual or via AWS Auto Scaling | ✅ Automatic | Serverless advantage |
+| **Capacity Planning** | Required (choose instance types) | Not required | Serverless advantage |
+| **Cost Model** | Fixed monthly + storage | Pay-per-use (OCUs) | Different optimization |
+
+**Conclusion**: The 2-index architecture works identically with both deployment models. The choice between provisioned and Serverless affects operational overhead and cost structure, but not the core retrieval functionality.
 
 ---
 
@@ -1118,31 +1152,65 @@ def ab_test_chunking_strategies(
 
 | Component | 6-Index | 2-Index | Savings |
 |-----------|---------|---------|---------|
-| OpenSearch Write Ops | $600 | $250 | -58% |
+| **OpenSearch Indexing** | $300 | $150 | -50% |
 | Contextual Enhancement (Claude) | $0 | $300 | +$300 |
 | Embedding Generation (Titan v2) | $400 | $400 | None |
-| **Total** | **$1,000** | **$950** | **-5%** |
+| **Total** | **$700** | **$850** | **+21%** |
 
-**Note**: Contextual Retrieval adds $300 per 1M docs but provides 49% improvement in retrieval accuracy, making it highly cost-effective.
+**OpenSearch Indexing Cost Notes**:
+
+**Provisioned Domain**: Indexing costs are included in the monthly instance fees. No per-document charge.
+
+**OpenSearch Serverless** (if adopted):
+- Ingestion OCUs: ~$150/month for 1M documents
+- Storage OCUs: ~$40/month for 500 GB
+- **Total**: ~$190/month
+
+**Note**: Contextual Retrieval adds $300 per 1M docs but provides 49% improvement in retrieval accuracy, making it highly cost-effective. The additional cost is for Claude API calls during ingestion.
 
 #### Query Costs (per 10K queries)
 
 | Component | 6-Index | 2-Index | Savings |
 |-----------|---------|---------|---------|
-| OpenSearch Search Ops | $50 | $35 | -30% |
+| **OpenSearch Queries** | $0 | $0 | N/A |
 | Reranking (Cohere) | $100 | $100 | None |
-| **Total** | **$150** | **$135** | **-10%** |
+| **Total** | **$100** | **$100** | None |
+
+**OpenSearch Query Cost Notes**:
+
+**Provisioned Domain**: Query costs are included in the monthly instance fees. No per-query charge.
+
+**OpenSearch Serverless** (if adopted):
+- Search OCUs: ~$35/month for 10K queries
+- **Total**: ~$35/month
+
+**Note**: With provisioned OpenSearch, the primary variable cost is reranking (if using external services like Cohere). This provides predictable costs regardless of query volume.
 
 #### Monthly Infrastructure Costs
 
 | Component | 6-Index | 2-Index | Savings |
 |-----------|---------|---------|---------|
-| OpenSearch Serverless | $250 | $150 | -40% |
-| Neptune Serverless | $100 | $0 (deferred) | -100% |
-| ElastiCache Redis | $67 | $67 | None |
-| **Total** | **$417** | **$217** | **-48%** |
+| **OpenSearch** | $280 | $180 | -36% |
+| **Neptune** | $120 | $0 (deferred) | -100% |
+| **ElastiCache Redis** | $67 | $67 | None |
+| **Total** | **$467** | **$247** | **-47%** |
 
-**ROI**: 2-Index architecture saves $200/month ($2,400/year) while maintaining or improving retrieval quality.
+**OpenSearch Cost Breakdown** (2-Index):
+
+**Option A: Provisioned OpenSearch Domain**
+- Data nodes: 3 × r6g.large.search = $339/month ($0.156/hour per node)
+- Master nodes: 3 × t3.small.search = $45/month ($0.021/hour per node)
+- EBS storage: 500 GB gp3 = $40/month
+- **Total**: $424/month
+
+**Option B: OpenSearch Serverless** (if adopted)
+- Search and vector indexing: $180/month (estimated OCU usage)
+- Storage: $40/month
+- **Total**: $220/month
+
+**Note**: The team is evaluating provisioned vs. serverless deployment. Provisioned domains offer predictable performance and costs, while Serverless provides automatic scaling and pay-per-use pricing.
+
+**ROI**: 2-Index architecture saves $220/month ($2,640/year) with provisioned OpenSearch, or $200/month ($2,400/year) with OpenSearch Serverless, while maintaining or improving retrieval quality.
 
 ---
 
@@ -1151,10 +1219,23 @@ def ab_test_chunking_strategies(
 ### Phase 1: Schema & Migration (Week 1)
 
 **Tasks**:
-1. Create unified schemas for 2-index architecture
-2. Implement data migration script (6 indices → 2 indices)
-3. Add contextual enhancement pipeline
-4. Implement semantic chunking
+1. **Decide on OpenSearch deployment model** (provisioned vs. Serverless)
+2. Create unified schemas for 2-index architecture
+3. Implement data migration script (6 indices → 2 indices)
+4. Add contextual enhancement pipeline
+5. Implement semantic chunking
+
+**OpenSearch Deployment Decision Framework**:
+
+| Factor | Choose Provisioned If... | Choose Serverless If... |
+|--------|-------------------------|------------------------|
+| **Workload** | Consistent query volume (>1M queries/month) | Variable/unpredictable query volume |
+| **Performance** | Need predictable low latency | Can tolerate occasional cold starts |
+| **Cost** | High sustained usage = lower per-unit cost | Low/intermittent usage = pay only for what you use |
+| **Operations** | Team has capacity to manage clusters | Want zero operational overhead |
+| **Scaling** | Can predict capacity needs | Want automatic scaling |
+
+**Recommendation**: Start with provisioned domains for production (better cost control at scale), evaluate Serverless for development/staging (lower operational overhead).
 
 ```python
 # Migration script
@@ -1296,9 +1377,11 @@ def validate_migration():
    - Cohere Rerank v3 recommended
 
 6. **Cost-Effective Simplification**
-   - Saves $200/month ($2,400/year)
+   - Saves $220/month ($2,640/year) with provisioned OpenSearch
+   - Saves $200/month ($2,400/year) with OpenSearch Serverless
    - No performance degradation
    - Easier maintenance and debugging
+   - Predictable costs with provisioned, pay-per-use with Serverless
 
 ---
 
