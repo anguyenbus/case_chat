@@ -22,7 +22,7 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 |-----------|----------------|
 | **Serverless-first** | Lambda for orchestrators, API Gateway for APIs, S3 for storage |
 | **Kubernetes for workloads** | EKS for VLM+GPU processing, ingestion pipeline, stateful services |
-| **Managed services** | OpenSearch Serverless, DynamoDB, Neptune to reduce operational overhead |
+| **Managed services** | OpenSearch Serverless, Neptune to reduce operational overhead |
 | **Event-driven scaling** | KEDA for Kubernetes pod autoscaling based on queue depth |
 | **Security-first** | VPC isolation, WAF, IRSA for pod identity |
 | **GitOps deployment** | ArgoCD for continuous delivery to EKS clusters |
@@ -60,7 +60,6 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 - **Phase 2**: Add PrivateLink when traffic exceeds 100 GB/month or compliance requires it
 - **Endpoints** (when added):
   - S3 (gateway endpoint) - highest priority for document storage
-  - DynamoDB (gateway endpoint) - citation and metadata indices
   - Bedrock (interface endpoint) - if compliance requires private ML access
   - OpenSearch Serverless (interface endpoint) - optional
 - **Cost**: ~$7/month per gateway endpoint, ~$7/month per interface endpoint
@@ -193,19 +192,21 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 - **Capacity**: Pay-per-search, no provisioning needed
 - **Access**: Public endpoint (TLS) in phase 1, VPC interface endpoint in phase 2
 
-#### Amazon DynamoDB
-- **Purpose**: NoSQL database for exact-match lookups
-- **Tables**:
-  - `legal-citation-index` - Section numbers, case citations (PK: citation)
-  - `document-metadata` - Document attributes (PK: document_id)
-  - `session-store` - Conversation history (PK: session_id, SK: timestamp)
-  - `ingestion-status` - Document processing status (PK: document_id)
-- **Capacity Mode**: On-demand (pay-per-request)
+#### Amazon ElastiCache for Redis
+- **Purpose**: In-memory data store for session management and caching
+- **Use Cases**:
+  - **Session Storage**: Conversation history, user messages, AI responses (TTL: 4-16 hours)
+  - **Response Caching**: Cached responses for common queries (TTL: 1 hour)
+  - **User Context**: Active user session data (TTL: 4 hours)
 - **Features**:
-  - Global Tables for multi-region (future)
-  - TTL for automatic expiration (7-day inactivity)
-  - PartiQL for SQL-like queries
-- **Access**: Public endpoint (TLS) in phase 1, VPC gateway endpoint in phase 2
+  - Sub-millisecond latency for session reads
+  - Automatic eviction with TTL policies
+  - Redis Cluster for high availability
+  - Automatic failover to replica
+- **Node Type**: cache.t3.medium (2 vCPU, 2.6 GB RAM) or cache.r6g.large (2 vCPU, 12.8 GB RAM)
+- **Scaling**: Horizontal scaling with Redis Cluster (up to 500 shards)
+- **Access**: VPC private endpoints only
+- **Cost**: ~$50-150/month depending on node type
 
 #### Amazon Neptune
 - **Purpose**: Graph database for citation cross-references
@@ -293,7 +294,7 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 #### AWS X-Ray
 - **Purpose**: Distributed tracing for microservices
 - **Tracing Flow**:
-  - API Gateway → Lambda/EKS pods → DynamoDB/OpenSearch/Bedrock
+  - API Gateway → Lambda/EKS pods → OpenSearch/Bedrock
   - End-to-end request latency breakdown
   - Performance bottleneck identification
   - Pod-to-service dependency mapping
@@ -317,7 +318,7 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 #### AWS CloudFormation / Terraform
 - **Purpose**: Infrastructure as Code (IaC)
 - **Recommendation**: Terraform for multi-cloud support
-- **State**: S3 backend for Terraform state with DynamoDB locking
+- **State**: S3 backend for Terraform state with state locking
 - **Modules**: Reusable components per service layer
 - **Kubernetes Tools**:
   - **Helm**: Package manager for EKS applications
@@ -374,19 +375,20 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 - No capacity planning overhead
 - Cost efficiency for sporadic workloads
 
-### 3.2 Why DynamoDB On-Demand vs. Provisioned?
+### 3.2 Why OpenSearch Serverless vs. Provisioned OpenSearch?
 
-| Factor | On-Demand | Provisioned |
-|--------|-----------|-------------|
-| **Cost** | Pay-per-request | Fixed RCUs/WCUs |
-| **Scaling** | Automatic | Manual limits |
-| **Prediction** | No traffic prediction needed | Capacity planning required |
-| **Use Case** | Unknown traffic patterns | Predictable throughput |
+| Factor | Serverless | Provisioned |
+|--------|------------|-------------|
+| **Cost** | Pay per search/query | Fixed hourly cost per node |
+| **Scaling** | Automatic | Manual |
+| **Operations** | Zero management | Cluster maintenance |
+| **Capacity Planning** | Not required | Required |
+| **Use Case** | Variable workloads | Consistent high throughput |
 
-**Decision**: **On-Demand** for Case Assistant due to:
-- Unpredictable query patterns
-- No operational overhead
-- Auto-scales to handle bursts
+**Decision**: **Serverless** for Case Assistant due to:
+- Variable query patterns (user-driven)
+- No capacity planning overhead
+- Cost efficiency for sporadic workloads
 
 ### 3.3 Why API Gateway + ALB vs. API Gateway Only?
 
@@ -449,19 +451,21 @@ The Case Assistant Chat system is deployed on AWS using a serverless-first archi
 - Single deployment vs multiple Cluster Autoscaler deployments
 - Future-proof with AWS-backed development
 
-### 3.6 Why Neptune vs. DynamoDB Graph?
+### 3.5 Why Neptune vs. OpenSearch for Cross-References?
 
-| Factor | Neptune | DynamoDB Graph |
-|--------|---------|----------------|
-| **Query Language** | Gremlin, openCypher | PartiQL (limited graph) |
-| **Performance** | Optimized for graph queries | Adjacent list pattern (slow) |
+| Factor | Neptune | OpenSearch |
+|--------|---------|------------|
+| **Query Language** | Gremlin, openCypher | Query DSL |
+| **Performance** | Optimized for graph queries | Adjacent list pattern (slower) |
 | **Depth Traversal** | Fast for deep traversals | Performance degrades with depth |
-| **Cost** | Higher | Lower |
+| **Cost** | Higher | Lower (already using for search) |
 
 **Decision**: **Neptune** for Case Assistant due to:
 - Citation cross-references require multi-hop traversals
 - Better performance for relationship queries
 - Purpose-built for graph workloads
+
+**Alternative**: OpenSearch can handle simple cross-references using adjacent list pattern if graph traversals are simple (<2 hops).
 
 ---
 
@@ -500,7 +504,7 @@ API Gateway → VPC Link → ALB → EKS Pods
 ### 4.4 PrivateLink (Private Service Access) - Phase 2
 
 ```
-EKS Pods → VPC Endpoint → S3/DynamoDB/Bedrock
+EKS Pods → VPC Endpoint → S3/OpenSearch/Bedrock
 ```
 
 **Use Case**: Private access to AWS services when compliance requires
@@ -518,7 +522,7 @@ EKS Pods → VPC Endpoint → S3/DynamoDB/Bedrock
 | **Lambda** | Per request + compute duration | Right-size memory, use provisioned concurrency sparingly |
 | **API Gateway** | Per million requests + data transfer | Cache responses where possible |
 | **OpenSearch Serverless** | Per search/query + data storage | Optimize chunk size, filter before search |
-| **DynamoDB On-Demand** | Per read/write unit | Use GSIs wisely, filter with PK |
+| **OpenSearch Serverless** | Per search/query + data storage | Optimize chunk size, filter before search |
 | **Neptune Serverless** | Per query | Cache graph traversals |
 
 ### 5.2 Fixed-Cost Services
@@ -533,7 +537,7 @@ EKS Pods → VPC Endpoint → S3/DynamoDB/Bedrock
 ### 5.3 Cost-Saving Strategies
 
 1. **S3 Intelligent Tiering**: Automatically move old documents to Glacier
-2. **DynamoDB TTL**: Auto-expire sessions and old data
+2. **OpenSearch Data Retention**: Auto-delete indices after retention period
 3. **Lambda Reserved Concurrency**: Prevent runaway costs
 4. **S3 Lifecycle Policies**: Delete processed raw documents after 30 days
 5. **Bedrock On-Demand**: No provisioning, pay-per-token
@@ -557,7 +561,7 @@ EKS Pods → VPC Endpoint → S3/DynamoDB/Bedrock
 | **EKS Compute** (Fargate or Managed Nodes) | $150-300 |
 | **KEDA** | $0 (open source) |
 | **OpenSearch Serverless** | $150-300 |
-| **DynamoDB** | $50-100 |
+| **ElastiCache Redis** | $50-150 |
 | **Neptune Serverless** | $100-200 |
 | **S3** | $20-50 |
 | **Bedrock** | $200-500 |
@@ -587,7 +591,7 @@ User → Azure AD → WAF → API Gateway (JWT) → VPC → ALB → EKS Pods
 - **VPC**: Private subnets only, no direct internet access for pods
 - **Security Groups**: Restrictive rules, only allow necessary traffic (ALB → pods, pods → AWS services)
 - **NACLs**: Additional network-level controls for subnet boundaries
-- **VPC Endpoints**: Phase 1: Public endpoints with TLS. Phase 2: Private endpoints for S3, DynamoDB, Bedrock
+- **VPC Endpoints**: Phase 1: Public endpoints with TLS. Phase 2: Private endpoints for S3, OpenSearch, Bedrock
 - **WAF**: Web exploit protection at API Gateway
 - **Network Policies**: Calico or Cilium for pod-to-pod traffic control (optional, phase 2)
 
@@ -602,7 +606,7 @@ User → Azure AD → WAF → API Gateway (JWT) → VPC → ALB → EKS Pods
 
 ### 6.4 Data Protection
 
-- **Encryption at Rest**: S3, DynamoDB, OpenSearch, Neptune all encrypted
+- **Encryption at Rest**: S3, OpenSearch, Neptune all encrypted
 - **Encryption in Transit**: TLS 1.2+ for all connections
 - **Data Classification**: Public (legislation), Internal (user queries), Confidential (user sessions)
 - **PII Handling**: Strip user identifiers before logging
@@ -650,7 +654,7 @@ User → Azure AD → WAF → API Gateway (JWT) → VPC → ALB → EKS Pods
 | **EKS** | Orange | Primary: Containerized services |
 | **ECS** | Orange | Alternative: If simpler AWS-native approach preferred |
 | **S3** | Green | Document storage |
-| **DynamoDB** | Blue/Green | NoSQL database |
+| **OpenSearch** | Orange/Blue | Vector and keyword search |
 | **OpenSearch** | Orange/Blue | Vector and keyword search |
 | **Neptune** | Blue/Green | Graph database |
 | **Bedrock** | Pink/Purple | LLM and embeddings |

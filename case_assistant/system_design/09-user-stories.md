@@ -416,300 +416,261 @@ graph LR
 
 ### Database Technology Selection for 6-Index Architecture
 
-#### Why DynamoDB for Citation and Metadata Indices
+#### OpenSearch-First Approach for All Indices
 
-**Executive Summary**: Of the 6 indices in our RAG architecture, **2 require DynamoDB** (Citation and Metadata) while **4 use OpenSearch** (Semantic, Keyword, Context, Cross-Reference). This is not redundancy—this is using the right tool for each job based on access patterns.
-
----
-
-##### The Fundamental Access Pattern Difference
-
-| Index | Access Pattern | Data Structure | Right Technology |
-|-------|---------------|----------------|------------------|
-| **Citation Index** | Exact match by known key | Key-value lookup | **DynamoDB** ✅ |
-| **Metadata Index** | Filter by exact attributes | Key-value lookup | **DynamoDB** ✅ |
-| **Semantic Index** | Similarity search by embedding | Vector similarity | **OpenSearch** ✅ |
-| **Keyword Index** | Full-text search by terms | Inverted index | **OpenSearch** ✅ |
-| **Context Index** | Retrieve by chunk ID (parent) | Key-value lookup | **DynamoDB** ✅ |
-| **Cross-Reference Index** | Graph traversal | Graph edges | **Neptune** ✅ |
-
-**Key Insight**: Legal citations are **primary keys**, not search terms. You don't "search" for a citation—you **look it up**.
+**Executive Summary**: The Case Assistant RAG architecture uses **Amazon OpenSearch Serverless** for all 6 indices, with **ElastiCache Redis** for session management. OpenSearch provides a unified platform for vector search, keyword search, and metadata filtering, while ElastiCache handles hot session data.
 
 ---
 
-##### Index 1: Legal Citation Index — Why DynamoDB Is Non-Negotiable
+##### Technology Stack Overview
 
-###### Problem: Legal Citations Are Structured Identifiers, Not Natural Language
+| Index | Access Pattern | Technology | Rationale |
+|-------|---------------|------------|-----------|
+| **Citation Index** | Exact match + term search | **OpenSearch** | Keyword fields with alias normalization |
+| **Metadata Index** | Filter by attributes | **OpenSearch** | Native filter context with vector search |
+| **Semantic Index** | Similarity search | **OpenSearch** | Vector embeddings (k-NN) |
+| **Keyword Index** | Full-text search | **OpenSearch** | BM25 inverted index |
+| **Context Index** | Parent chunk retrieval | **OpenSearch** | Parent-child relationships |
+| **Cross-Reference Index** | Graph traversal | **Neptune** | Citation graph for multi-hop queries |
+| **Session Store** | Hot session data | **ElastiCache Redis** | Sub-millisecond latency, TTL |
 
-```
-Legal citations have a canonical form with multiple valid aliases:
+**Key Insight**: OpenSearch supports both vector similarity and structured filtering in a single query, enabling metadata pre-filtering alongside semantic search.
 
-Canonical: s-288-95
-Aliases:
-├── Section 288-95
-├── s 288-95
-├── sec. 288-95
-├── subsection 288-95
-├── 288-95 (with act context)
-└── ITAA 1997 s 288-95
+---
 
-This is NOT a search problem. This is a key-value lookup problem.
-```
+##### Index 1: Legal Citation Index — OpenSearch Implementation
 
-###### Why OpenSearch Fails for Citations
+###### Citation Storage in OpenSearch
 
-```python
-# OpenSearch approach (wrong tool)
-opensearch.search({
-    "query": {
-        "term": {"citation.keyword": "section 288-95"}
-    }
-})
-
-# Problem: Fails if user says "s 288-95" or "288-95" or "sec. 288-95"
-
-# Try fuzzy matching to handle variations:
-opensearch.search({
-    "query": {
-        "match": {"citation": "288-95"}
-    }
-})
-
-# Problem: Returns FALSE POSITIVES:
-# - Section 288-95 ✅ (correct)
-# - Section 288-950 ❌ (wrong section)
-# - Section 1288-95 ❌ (wrong act)
-# - Section 288-95A ❌ (amended version)
-
-# Result: 15% error rate on legal citations = UNACCEPTABLE for ATO legal advice
-```
-
-**Consequence**: If the system retrieves wrong citations, ATO officers receive incorrect legal advice. This is not a technical optimization—it's a **legal accuracy requirement**.
-
-###### Why DynamoDB Excels for Citations
-
-```python
-# DynamoDB approach (right tool)
-# Step 1: Normalize to canonical form
-citation_id = normalize_citation("Section 288-95")  # → "s-288-95"
-
-# Step 2: Exact match lookup (O(1), 5ms)
-result = dynamodb.get_item(
-    TableName='legal-citation-index',
-    Key={'citation_id': 's-288-95'}
-)
-
-# Step 3: Retrieve with all aliases and hierarchy
+```json
 {
-    "citation_id": "s-288-95",           # Primary key
-    "aliases": [                         # All valid variations
-        "section-288-95",
-        "s-288-95",
-        "sec-288-95"
-    ],
+  "chunk_id": "itaa-1997-s288-95-chunk-001",
+  "text": "Penalty: 210 penalty units for each 28 day period...",
+  "embedding": [0.123, 0.456, ...],
+  "metadata": {
+    "doc_type": "legislation",
+    "jurisdiction": "federal",
     "act": "ITAA 1997",
-    "section_number": "288-95",
+    "section": "288-95"
+  },
+  "citations": {
+    "canonical": "s-288-95",
+    "aliases": ["section-288-95", "s-288-95", "sec-288-95", "288-95"],
+    "act": "ITAA 1997",
     "title": "Failure to lodge return on time",
-    "text_snippet": "Penalty: 210 penalty units...",
     "hierarchy": {
-        "parent": "d-288",               # Division 288
-        "children": ["s-288-95-1", "s-288-95-2", "s-288-95-3"]
-    },
-    "cross_references": [
-        {"citation": "s-960-20", "type": "definition", "term": "assessment"}
-    ]
+      "parent": "d-288",
+      "children": ["s-288-95-1", "s-288-95-2"]
+    }
+  }
 }
-
-# Result: 100% accuracy, 5ms latency, zero false positives
 ```
 
-###### Performance Comparison: Real ATO Query
+###### Citation Query Strategy
 
-```
-Query: "What are the penalties under Section 288-95 for late BAS lodgment?"
+```python
+# Approach 1: Multi-field citation search
+def find_citation_opensearch(user_citation: str):
+    # Normalize citation (remove spaces, lowercase)
+    normalized = user_citation.lower().replace(' ', '-').replace('section', 's')
 
-OpenSearch approach:
-1. Search for "288-95" → 50ms, returns 10 results (8 correct, 2 false positives)
-2. Try each result in context → 200ms
-3. Filter false positives manually → 50ms
-Total: 300ms, 80% accuracy
+    results = opensearch.search({
+        "query": {
+            "bool": {
+                "should": [
+                    {"term": {"citations.canonical": normalized}},
+                    {"term": {"citations.aliases": normalized}},
+                    {"wildcard": {"citations.aliases": f"*{extract_number(user_citation)}*"}}
+                ]
+            }
+        }
+    })
 
-DynamoDB approach:
-1. Normalize "Section 288-95" → "s-288-95" → 1ms
-2. Exact match lookup → 5ms
-3. Retrieve hierarchy and cross-references → 5ms
-Total: 11ms, 100% accuracy
+    return results
 
-Business impact:
-- 27× faster retrieval (11ms vs 300ms)
-- 100% accurate (vs 80%)
-- Zero false positives (vs 20%)
-```
+# Approach 2: Use metadata filter + vector search
+def search_with_citation_context(query: str, citation: str):
+    citation_section = extract_section_number(citation)  # "288-95"
 
-###### Cost Analysis: Citation Index
+    results = opensearch.search({
+        "query": {
+            "bool": {
+                "must": [
+                    {"knn": {"embedding": {"vector": encode(query), "k": 10}}}
+                ],
+                "filter": [
+                    {"term": {"metadata.section": citation_section}}
+                ]
+            }
+        }
+    })
 
-```
-Estimated usage:
-- 500 ATO officers
-- 20 queries per day per officer
-- 3 citations per query (average)
-- 20 working days per month
-
-Total citation lookups: 500 × 20 × 3 × 20 = 600,000 lookups/month
-
-DynamoDB On-Demand cost:
-- $0.25 per million read requests
-- 600,000 reads = 0.6M reads
-- Cost: 0.6 × $0.25 = $0.15/month
-
-OpenSearch Serverless cost (for citation lookup):
-- $1.44 per million query operations (OCUs)
-- Complex citation queries use ~8 OCUs each
-- 600,000 × 8 OCUs = 4.8M OCUs
-- Cost: 4.8 × $1.44 = $6.91/month
-
-Savings with DynamoDB: $6.76/month (97.8% cost reduction)
-Plus: 27× faster, 100% accurate
+    return results
 ```
 
-###### The Legal Accuracy Requirement
+**Benefits**:
+- Single query combines citation filter + semantic search
+- OpenSearch handles both vector similarity and structured filtering
+- Native support for alias arrays (store all citation variations)
 
-```
-Error rate comparison:
-- OpenSearch: 15% false positive rate on citations
-- At 600K lookups/month: 90,000 incorrect citations per month
-
-Impact of incorrect citation:
-→ ATO officer receives wrong legal provision
-→ Incorrect decision affecting taxpayer
-→ Potential legal challenge
-→ System loses trust
-
-Question: Can we accept 90K incorrect citations per month?
-Answer: NO. Legal accuracy is non-negotiable.
-
-DynamoDB provides 100% citation accuracy at negligible cost ($0.15/month).
-```
+**Considerations**:
+- Citation normalization required at ingestion time
+- Wildcard queries may return false positives (mitigated by tight act/jurisdiction filters)
+- For exact citation-only lookups, consider caching frequently accessed citations in Redis
 
 ---
 
-##### Index 5: Metadata Index — Why DynamoDB Optimizes Query Performance
+##### Index 5: Metadata Index — OpenSearch Native Filtering
 
-###### Problem: Pre-Search Filtering Must Be Fast and Precise
+###### Metadata Stored on Each Chunk
 
+```json
+{
+  "chunk_id": "itaa-1997-chunk-001",
+  "text": "...",
+  "embedding": [...],
+  "metadata": {
+    "doc_type": "legislation",
+    "jurisdiction": "federal",
+    "act": "ITAA 1997",
+    "year": 1997,
+    "status": "active",
+    "topics": ["income_tax", "penalties", "lodgment"],
+    "effective_date": "1997-07-01",
+    "ato_business_line": "compliance"
+  }
+}
 ```
-Query: "What are penalties for late BAS lodgment in federal income tax law?"
 
-System must:
-1. Filter documents by metadata BEFORE expensive vector search
-2. Apply multiple exact filters: doc_type=legislation, jurisdiction=federal, year>=1997
-3. Narrow 50,000 documents → 25 relevant documents
-4. Only then run vector search on narrowed set
-
-This is NOT a search problem. This is a filtering problem.
-```
-
-###### Why OpenSearch Is Suboptimal for Metadata Filtering
+###### Metadata Filtering + Vector Search (Single Query)
 
 ```python
-# OpenSearch metadata filter (complex bool query)
-opensearch.search({
-    "query": {
-        "bool": {
-            "must": [
-                {"term": {"doc_type.keyword": "legislation"}},
-                {"term": {"jurisdiction.keyword": "federal"}},
-                {"range": {"year": {"gte": 1997}}},
-                {"terms": {"topics": ["income_tax", "penalties", "lodgment"]}},
-                {"term": {"status": "active"}}
-            ]
-        }
+# Pre-filter by metadata, then vector search
+def search_with_metadata_filters(query: str, filters: dict):
+    bool_query = {
+        "must": [
+            {"knn": {"embedding": {"vector": encode(query), "k": 10}}}
+        ],
+        "filter": []
     }
-})
 
-# Performance:
-- Cache hit (10-30% of queries): 30-50ms
-- Cache miss (70-90% of queries): 60-120ms
-- Latency increases with filter complexity
+    # Add metadata filters
+    if "doc_type" in filters:
+        bool_query["filter"].append({"term": {"metadata.doc_type": filters["doc_type"]}})
 
-# Problem: Metadata diversity = poor cache effectiveness
-# 13 doc types × 2 jurisdictions × 100 years × 50 topics = 130,000 combinations
-# Realistic cache hit rate: 10-30%
+    if "jurisdiction" in filters:
+        bool_query["filter"].append({"term": {"metadata.jurisdiction": filters["jurisdiction"]}})
+
+    if "year_from" in filters:
+        bool_query["filter"].append({"range": {"metadata.year": {"gte": filters["year_from"]}}})
+
+    if "status" in filters:
+        bool_query["filter"].append({"term": {"metadata.status": filters["status"]}})
+
+    results = opensearch.search({
+        "query": {"bool": bool_query},
+        "size": 10
+    })
+
+    return results
 ```
 
-###### Why DynamoDB Excels for Metadata Filtering
-
+**Example Query**:
 ```python
-# DynamoDB metadata filter (GSIs with exact match)
-response = dynamodb.query(
-    TableName='document-metadata',
-    IndexName='doc-type-jurisdiction-index',
-    KeyConditionExpression='doc_type = :dt',
-    FilterExpression='jurisdiction = :jur AND year >= :year AND #status = :active',
-    ExpressionAttributeNames={'#status': 'status'},
-    ExpressionAttributeValues={
-        ':dt': 'legislation',
-        ':jur': 'federal',
-        ':year': 1997,
-        ':active': 'active'
+# Query: "Penalties for late BAS in federal legislation after 1997"
+search_with_metadata_filters(
+    query="late BAS penalties",
+    filters={
+        "doc_type": "legislation",
+        "jurisdiction": "federal",
+        "year_from": 1997,
+        "status": "active"
     }
 )
-
-# Performance:
-- Hash key lookup on GSI: 8-12ms (no cache dependency)
-- Consistent latency regardless of query complexity
-- Single-digit millisecond latency at any scale
-
-# Benefit: Pre-filter before expensive vector search
-# 50,000 documents → 25 documents (99.95% reduction)
-# Vector search now runs on 25 docs instead of 50,000
-# Cost savings: 99.95% on vector search operations
 ```
 
-###### Cost Optimization Through Pre-Filtering
+**Performance**:
+- Single OpenSearch query handles filtering + vector search
+- Latency: 30-80ms (depending on result set size)
+- No separate metadata lookup required
+- Cost: $0.0005-0.002 per query (OpenSearch serverless pricing)
 
+**Benefits**:
+- Simplified architecture (single service for retrieval)
+- Native integration of filtering with search
+- No data synchronization between services
+- Lower operational overhead
+
+---
+
+##### Session Storage: ElastiCache Redis
+
+**Purpose**: Hot session data for active conversations
+
+**What Goes in Redis**:
+```python
+# Session data structure
+session = {
+    "session_id": "sess-12345",
+    "user_id": "ato-officer-001",
+    "created_at": "2026-03-27T10:00:00Z",
+    "last_active": "2026-03-27T14:30:00Z",
+    "document_ids": ["doc-001", "doc-002"],
+    "conversation": [
+        {"role": "user", "content": "...", "timestamp": "..."},
+        {"role": "assistant", "content": "...", "citations": [...], "timestamp": "..."}
+    ],
+    "ttl": 14400  # 4 hours auto-expiration
+}
 ```
-Without DynamoDB pre-filter:
-- Vector search on all 50,000 documents
-- OpenSearch cost: 50,000 × $0.0005 = $25 per query
 
-With DynamoDB pre-filter:
-- Metadata filter: $0.0001 (25 documents match)
-- Vector search on 25 documents: 25 × $0.0005 = $0.0125
-- Total cost: $0.0126 per query
+**Why Redis for Sessions**:
+- **Sub-millisecond latency**: Critical for chat responsiveness
+- **Built-in TTL**: Automatic session expiration (4-16 hours)
+- **In-memory**: Hot data access pattern
+- **Simple data structures**: Hash for session, sorted sets for message history
 
-Savings per query: $24.9874 (99.95% cost reduction)
+**Session Query Flow**:
+```python
+# 1. Retrieve session (Redis: <1ms)
+session = redis.get(f"session:{session_id}")
 
-At 10,000 queries/month: $249,874 saved
-DynamoDB cost: $50-100/month
-ROI: 2,498× return on investment
+# 2. Search with document filter (OpenSearch: 30-80ms)
+results = search_with_metadata_filters(
+    query=user_message,
+    filters={"doc_ids": session["document_ids"]}
+)
+
+# 3. Generate response (Bedrock: 1500ms)
+response = bedrock.generate(context=results, history=session["conversation"])
+
+# 4. Update session (Redis: <1ms)
+redis.hset(f"session:{session_id}", "last_active", datetime.now())
 ```
 
 ---
 
-##### Summary: Why DynamoDB Is Essential
+##### Summary: OpenSearch-First Architecture
 
-| Requirement | OpenSearch | DynamoDB | Winner |
-|-------------|------------|----------|--------|
-| **Citation exact match** | 85% accuracy | 100% accuracy | **DynamoDB** ✅ |
-| **Citation false positives** | 15% (90K/month) | 0% | **DynamoDB** ✅ |
-| **Citation latency** | 50-300ms | 5-10ms | **DynamoDB** ✅ |
-| **Citation cost** | $6.91/month | $0.15/month | **DynamoDB** ✅ |
-| **Metadata filter latency** | 60-120ms (cold cache) | 8-12ms (no cache needed) | **DynamoDB** ✅ |
-| **Metadata filter cost** | Expensive (scans all docs) | Cheap (hash key lookup) | **DynamoDB** ✅ |
-| **Pre-filter optimization** | Not possible | Reduces vector cost 99.95% | **DynamoDB** ✅ |
-| **Legal accuracy** | Unacceptable (15% error) | Perfect (100% accuracy) | **DynamoDB** ✅ |
+| Concern | OpenSearch Implementation | Benefits |
+|---------|--------------------------|----------|
+| **Citation lookup** | Multi-field search with aliases | Single query, integrated with vector search |
+| **Metadata filtering** | Native filter context | No separate lookup, tighter result sets |
+| **Semantic search** | k-NN vector similarity | Same query handles both |
+| **Session storage** | ElastiCache Redis | Sub-millisecond latency, built-in TTL |
+| **Cross-reference graph** | Neptune Serverless | Multi-hop traversals |
 
-**Bottom Line**: Using OpenSearch for citations is like using Google to look up a phone number. It works, but it's the wrong tool. Legal citations are primary keys—they require exact-match lookup, not fuzzy search.
+**Architecture Benefits**:
+- ✅ **Simplified**: Fewer services to manage (OpenSearch + Redis + Neptune)
+- ✅ **Unified**: Single query handles metadata + vector search
+- ✅ **Cost-effective**: No separate database for metadata/citations
+- ✅ **Performant**: 30-80ms for filtered vector search
+- ✅ **Scalable**: OpenSearch Serverless auto-scales
 
-**Business Case**:
-- **Investment**: $50-100/month for DynamoDB
-- **Savings**: $249,874/month in vector search costs (through pre-filtering)
-- **ROI**: 2,498×
-- **Legal accuracy**: 100% (vs 85%)
-- **Performance**: 5-10ms (vs 50-300ms)
-
-**Recommendation**: DynamoDB is non-negotiable for Citation and Metadata indices. This is a legal requirement, not a technical optimization.
+**Considerations**:
+- ⚠️ Citation normalization required at ingestion (handle variations)
+- ⚠️ Wildcard citation queries need tight metadata filters to avoid false positives
+- ⚠️ Session data size limited by Redis memory (use 16-64 GB node for production)
 
 ---
 
@@ -721,15 +682,15 @@ ROI: 2,498× return on investment
 
 **Chunking Strategy**:
 - **Content**: Section numbers, case citations, ruling references extracted as discrete entities
-- **Storage**: Key-value store (DynamoDB), not vector embeddings
+- **Storage**: OpenSearch keyword fields with alias arrays, stored alongside chunks
 - **Examples**: "Section 288-95", "ITAA 1997 s 6-5", "TR 2022/1", "FCT v. Myer (1937)"
-- **No tokenization**: Citations stored as canonical strings with aliases
+- **Citation normalization**: All variations stored in alias array for matching
 
 **Per Document Type**:
 
 | Document Type | Citations Extracted | Example Storage |
 |---------------|---------------------|-----------------|
-| Tax Legislation | All sections, subsections, definitions | `ITAA 1997 s 288-95` → `["s288-95", "section 288-95", "Sec. 288-95"]` |
+| Tax Legislation | All sections, subsections, definitions | OpenSearch doc with `citations.canonical: "s-288-95"`, `citations.aliases: ["section-288-95", "s-288-95", "sec-288-95"]` |
 | Tax Rulings | Ruling number, cited legislation, referenced cases | `TR 2022/1` → citations to ITAA s 8-1, FCT v. Case |
 | Case Law | Case name, citation, prior decisions cited | `FCT v. Myer (1937) 56 CLR 635` → parallel citations |
 | Tax Determinations | TD number, referenced sections | `TD 2023/5` → cites ITAA 1997 s 6-5 |
@@ -830,8 +791,8 @@ ROI: 2,498× return on investment
 **Content**:
 - **Granularity**: Document-level (not chunk-level)
 - **Fields**: Document type, effective date, jurisdiction, status, topics
-- **Storage**: DynamoDB for fast key-value lookups
-- **No chunking**: Document metadata extracted once per document
+- **Storage**: OpenSearch metadata fields on each chunk, filterable during vector search
+- **No chunking**: Document metadata extracted once per document, replicated to all chunks
 
 **Per Document Type Metadata**:
 
@@ -852,7 +813,7 @@ ROI: 2,498× return on investment
 - **Granularity**: Chunk-level citation links
 - **Content**: Source chunk → target chunk relationships
 - **Extraction**: Citations parsed during document ingestion
-- **Storage**: Graph database (Neptune) or adjacency list (DynamoDB)
+- **Storage**: Graph database (Neptune Serverless) for multi-hop traversals
 
 **Citation Types Tracked**:
 

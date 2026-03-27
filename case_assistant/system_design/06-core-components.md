@@ -160,8 +160,8 @@ graph LR
 | **Background Jobs** | Ingestion, Cleanup | Lambda + SQS |
 | **Vector Database** | Vector Store | Amazon OpenSearch |
 | **Document Storage** | Document Store | Amazon S3 |
-| **Session Storage** | Session Store, Conversation History | DynamoDB + Redis |
-| **Metadata Storage** | Metadata Store | DynamoDB + RDS PostgreSQL |
+| **Session Storage** | Session Store, Conversation History | ElastiCache Redis |
+| **Metadata Storage** | Metadata Store | OpenSearch |
 | **LLM** | LLM Service | Amazon Bedrock |
 | **Observability** | Observability Platform | Self-hosted on EKS |
 
@@ -321,7 +321,7 @@ class Citation:
 ### Horizontal Scaling
 | Component | Scaling Strategy | State Management |
 |-----------|-----------------|------------------|
-| Chat Engine | Auto-scaling based on connections | Stateless (session state in DynamoDB) |
+| Chat Engine | Auto-scaling based on connections | Stateless (session state in OpenSearch/Redis) |
 | Retriever | Scale with query volume | Stateless (state in OpenSearch) |
 | Ingestion Pipeline | Scale with queue depth | Stateless (state in SQS) |
 | API Gateway | Automatic scaling | Stateless |
