@@ -1,94 +1,71 @@
 # Document Ingestion Pipeline
 
-## 1.3 Document Ingestion Pipeline (Conceptual)
+## 1. Document Ingestion Pipeline Overview
+
+The Case Assistant system processes documents through a unified pipeline that extracts content, generates embeddings, and indexes into OpenSearch. The pipeline handles two distinct knowledge bases:
+
+| Knowledge Base | Trigger | Volume | Processing Time |
+|----------------|---------|--------|-----------------|
+| **Static KB** | Scheduled (monthly) | 1,000-10,000 docs | 1-2 hours |
+| **User Upload KB** | Event-driven (on upload) | 1 doc per upload | 1-3 minutes |
 
 ```mermaid
 graph TB
-    subgraph "Document Ingestion - Logical Flow"
-        subgraph "Upload Stage"
-            USER[User uploads document]
-            VALIDATE[Validate file<br>Type, size, format<br>SHA-256 hash check]
-            DEDUP{Duplicate?<br>Check hash}
-            STORE[Store raw document<br>S3 with metadata]
+    subgraph "Document Ingestion Pipeline"
+        subgraph "Stage 1: Input"
+            STATIC[Scheduled Trigger<br/>EventBridge Monthly]
+            USER[User Upload<br/>API Gateway]
         end
 
-        subgraph "Extraction Stage - Adaptive Parser Selection"
-            ANALYZE[Analyze Page Structure<br>Detect tables<br>Check complexity]
-            TABLE_CHECK{Table Detected?<br>Page-by-page analysis}
-            SIMPLE[Text-Only Pages<br>Standard parser<br>Textract/PyMuPDF]
-            COMPLEX[Table Pages<br>VLM-based parser<br>LlamaParse/Bedrock + GPU]
-            MERGE[Merge Results<br>Combine text+table pages<br>Unified output]
+        subgraph "Stage 2: Storage"
+            RAW_S3[S3 Raw Bucket<br/>Document storage]
         end
 
-        subgraph "Delta Detection (Reupload)"
-            DELTA_CHECK{Reupload?<br>Same file hash}
-            PAGE_HASH[Compare Page Hashes<br>Identify changed pages]
-            DELETE_OLD[Delete Old Vectors<br>Only changed pages]
-            KEEP_SAME[Keep Existing Vectors<br>Unchanged pages]
+        subgraph "Stage 3: Extraction"
+            TEXTRACT[Document Extraction<br/>Lambda + Textract]
+            TABLE_DETECT{Table Detected?<br/>Page-level check}
+            TEXT_PARSE[Text Pages<br/>Standard parser]
+            TABLE_PARSE[Table Pages<br/>VLM + GPU]
         end
 
-        subgraph "Chunking Stage"
-            PAGE_SPLIT[Split into Pages<br>Extract individual pages<br>Page-level granularity]
-            CROSS_PAGE[Detect Cross-Page Text<br>Track text spanning pages<br>Continuity markers]
-            STRATEGY[Apply Chunking Strategy<br>Header-based or Parent-Child<br>Page-by-page processing]
-            META[Add Metadata<br>Document ID, page numbers<br>Chunk type, position<br>Cross-page links]
+        subgraph "Stage 4: Processing"
+            CHUNK[Chunking Strategy<br/>Semantic: 800-1200 tokens]
+            EMBED[Embeddings<br/>Bedrock Titan v2]
+            META[Metadata Extraction<br/>Citations, keywords]
         end
 
-        subgraph "Embedding Stage"
-            EMBED[Generate Embeddings<br>Bedrock Titan<br>Batch processing]
-            BATCH[Batch Processing<br>Process chunks in batches<br>Optimize throughput]
+        subgraph "Stage 5: Indexing"
+            INDEX[OpenSearch<br/>citation + unified indices]
+            META_DOC[Document Metadata<br/>OpenSearch indices]
+            VERSION[S3 Versioning<br/>History tracking]
         end
 
-        subgraph "Indexing Stage"
-            INDEX[Index in Vector Store<br>Per-session index<br>Hybrid: vector + keyword]
-            VERIFY[Verify Indexing<br>Validate all chunks indexed<br>Quality check]
+        subgraph "Stage 6: Completion"
+            STATUS[Status Update<br/>S3 status file]
+            NOTIFY[Notification<br/>SNS / User callback]
         end
 
-        subgraph "Completion Stage"
-            STATUS[Update Status<br>Mark document: READY<br>Notify user]
-            TTL[Set TTL<br>7-day inactivity timer<br>Auto-extend on access]
-        end
+        STATIC --> RAW_S3
+        USER --> RAW_S3
+        RAW_S3 --> TEXTRACT
+        TEXTRACT --> TABLE_DETECT
+        TABLE_DETECT -->|Text| TEXT_PARSE
+        TABLE_DETECT -->|Table| TABLE_PARSE
+        TEXT_PARSE --> CHUNK
+        TABLE_PARSE --> CHUNK
+        CHUNK --> EMBED
+        EMBED --> META
+        META --> INDEX
+        META --> META_DOC
+        META --> VERSION
+        INDEX --> STATUS
+        STATUS --> NOTIFY
     end
-
-    USER --> VALIDATE
-    VALIDATE --> DEDUP
-    DEDUP -->|Existing| RETURN[Return existing chunks<br>Skip reprocessing]
-    DEDUP -->|New| STORE
-    STORE --> ANALYZE
-
-    ANALYZE --> TABLE_CHECK
-    TABLE_CHECK -->|No table| SIMPLE
-    TABLE_CHECK -->|Table detected| COMPLEX
-    SIMPLE --> MERGE
-    COMPLEX --> MERGE
-
-    MERGE --> DELTA_CHECK
-    DELTA_CHECK -->|Reupload| PAGE_HASH
-    PAGE_HASH --> DELETE_OLD
-    PAGE_HASH --> KEEP_SAME
-    DELETE_OLD --> PAGE_SPLIT
-    KEEP_SAME --> INDEX
-    DELTA_CHECK -->|New upload| PAGE_SPLIT
-
-    PAGE_SPLIT --> CROSS_PAGE
-    CROSS_PAGE --> STRATEGY
-    STRATEGY --> META
-    META --> EMBED
-    EMBED --> BATCH
-    BATCH --> INDEX
-    VERIFY --> STATUS
-    STATUS --> TTL
-
-    style DEDUP fill:#FFEB3B
-    style ANALYZE fill:#2196F3
-    style COMPLEX fill:#9C27B0
-    style DELTA_CHECK fill:#FF9800
-    style PAGE_HASH fill:#FF5722
 ```
 
 ---
 
-## Why Page-Level Splitting? Table Detection Problem
+## 2. Page-Level Splitting for Table Detection
 
 The primary reason for splitting documents into pages is to **detect and handle tables separately** to preserve their structural integrity.
 
@@ -101,30 +78,14 @@ The primary reason for splitting documents into pages is to **detect and handle 
 | **Merged Cells** | Complex tables lose structure | Spans not recognized after split |
 | **Nested Tables** | Tables within tables broken | Inner table isolated from context |
 
-### Example of Broken Table Chunking
-
-❌ **WRONG - Text-based splitting**:
-```
-Chunk 1: "| Name | Age |"
-Chunk 2: "| John | 25 |"
-Chunk 3: "| Jane | 30 |"
-```
-→ **Problem**: No column context, headers separated from data
-
-✅ **CORRECT - VLM with GPU**:
-```
-Table Page → VLM processes as image → Extracts complete table with structure
-```
-→ **Solution**: Preserves column/row relationships, merged cells, formatting
-
 ### VLM + GPU Solution for Tables
 
 ```
 Table Page
     ↓
 [VLM Model with GPU]
-    ├─ LlamaParse (Vision Model)
-    ├─ Bedrock Multimodal (Claude)
+    ├─ Textract Tables (for simple tables)
+    ├─ Bedrock Multimodal (for complex tables)
     └─ Processes page as IMAGE
     ↓
 Structured Table Output
@@ -134,38 +95,23 @@ Structured Table Output
     └─ Nested tables handled
 ```
 
-### Why GPU is Required
-
-| Requirement | Why GPU is Needed |
-|-------------|-------------------|
-| **Image Processing** | Table pages processed as images |
-| **Cell Boundary Detection** | Precise visual boundary detection |
-| **Merged Cell Recognition** | Complex spatial relationships |
-| **Multi-Level Headers** | Nested structure understanding |
-| **Cross-Page Tables** | Continuity across page breaks |
-| **Batch Processing** | Faster inference with GPU acceleration |
-
----
-
-## Page-Level Decision Flow
+### Page-Level Decision Flow
 
 ```mermaid
 graph TB
     PAGE[Extracted Page]
-
-    TABLE_DETECT{Table Detected?<br>Vision-based check}
+    TABLE_DETECT{Table Detected?<br/>Vision-based check}
 
     TEXT_PATH[Text-Only Page]
     TABLE_PATH[Table Page]
 
-    TEXT_CHUNK[Standard Text Chunking<br>Character/Word based]
-    VLM_CHUNK[VLM + GPU Chunking<br>Image-based extraction]
+    TEXT_CHUNK[Standard Text Chunking<br/>Semantic: 800-1200 tokens]
+    VLM_CHUNK[VLM Extraction<br/>Table as JSON + text]
 
-    TEXT_OUT[Text Chunks<br>Fast, low cost]
-    TABLE_OUT[Structured Table<br>Preserved integrity]
+    TEXT_OUT[Text Chunks<br/>Fast, low cost]
+    TABLE_OUT[Structured Table<br/>Preserved integrity]
 
     PAGE --> TABLE_DETECT
-
     TABLE_DETECT -->|No table| TEXT_PATH
     TABLE_DETECT -->|Table found| TABLE_PATH
 
@@ -190,75 +136,73 @@ graph TB
 | **Merged cells** | Visual complexity | Flag for VLM |
 | **Headers + data rows** | Pattern matching | Flag for VLM |
 
-### Benefits of Page-Level Table Detection
+### Cost Optimization
 
-1. **Preserve Table Integrity** - No broken columns/rows
-2. **GPU Efficiency** - Only table pages use expensive GPU resources
-3. **Cost Optimization** - Text pages use cheaper text extraction
-4. **Accuracy** - Tables extracted with proper structure
-5. **Scalability** - Targeted GPU usage, not whole document
+| Page Type | Parser Used | GPU? | Cost |
+|-----------|-------------|------|------|
+| **Text-only pages** | PyMuPDF/Textract | No | Low |
+| **Simple tables** | Textract Tables | No | Medium |
+| **Complex tables** | Bedrock Multimodal | Yes | High |
+
+**Benefit**: Only table pages use expensive GPU resources → 60-70% cost savings.
 
 ---
 
-## Page-Level Chunking Process
+## 3. Chunking Strategy
 
-```mermaid
-graph TB
-    subgraph "Page-Level Chunking Flow"
-        DOC[PDF/DOC Document]
-        PAGES[Extract Pages<br>Page 1, Page 2, ... Page N]
+### Semantic Chunking (Primary Method)
 
-        subgraph "Page Processing Loop"
-            PAGE[Single Page]
+**Chunk Size**: 800-1200 tokens (optimized for Titan v2's 1536 dimensions)
 
-            subgraph "Table Detection - Primary Goal"
-                TABLE_CHECK{Table<br>Detected?}
-                TEXT_PROC[Text-Only Processing<br>Standard chunking]
-                TABLE_PROC[VLM + GPU Processing<br>Table extraction]
-            end
-
-            CROSS[Cross-Page Detection<br>Check text continuity<br>Mark boundaries]
-            CHUNK[Apply Chunking Strategy<br>Header-based or Parent-Child]
-            META_TAG[Add Metadata<br>Page number, table flag<br>Cross-page links]
-        end
-
-        CHUNKS[Chunked Output<br>Text chunks + Table chunks<br>Cross-page linked]
-    end
-
-    DOC --> PAGES
-    PAGES --> PAGE
-
-    PAGE --> TABLE_CHECK
-    TABLE_CHECK -->|No table| TEXT_PROC
-    TABLE_CHECK -->|Table found| TABLE_PROC
-
-    TEXT_PROC --> CROSS
-    TABLE_PROC --> CROSS
-
-    CROSS --> CHUNK
-    CHUNK --> META_TAG
-    META_TAG --> CHUNKS
-
-    style TABLE_CHECK fill:#FF9800
-    style TABLE_PROC fill:#9C27B0
-    style TEXT_PROC fill:#4CAF50
-```
-
-### Cross-Page Text Handling
+**Overlap**: 100-150 tokens (12-19%, reduced from 40-67%)
 
 ```mermaid
 graph LR
-    P1[Page 5<br>Last paragraph]
-    P2[Page 6<br>First paragraph]
+    DOC[Document Text]
+    SEMANTIC[Semantic Boundary Detection<br/>Embedding similarity]
+    CHUNKS[Chunks 800-1200 tokens<br/>With 100-150 token overlap]
 
-    DETECT{Text<br>Continues?}
+    DOC --> SEMANTIC
+    SEMANTIC --> CHUNKS
 
-    MERGE[Merge into<br>single chunk]
-    SPLIT[Keep separate<br>add metadata]
+    style SEMANTIC fill:#2196F3
+    style CHUNKS fill:#4CAF50
+```
 
-    C1[Chunk with<br>pages 5-6]
-    C2[Chunk 5<br>with metadata]
-    C3[Chunk 6<br>with metadata]
+**Why Semantic Over Fixed-Size**:
+- Preserves legal provision boundaries
+- Maintains logical argument flow
+- Reduces mid-sentence splits
+- 15-20% better retrieval precision for legal documents
+
+### Parent-Child Chunking
+
+| Chunk Type | Size | Purpose | Index |
+|------------|------|---------|-------|
+| **Child chunks** | 800-1200 tokens | Precise semantic search | unified-legal-index |
+| **Parent chunks** | 2400-3600 tokens | Complete legal context | unified-legal-index (linked) |
+
+**Process**:
+1. Create child chunks using semantic boundaries
+2. Aggregate 3-6 child chunks into 1 parent chunk
+3. Store both in OpenSearch with parent-child relationship
+4. Query returns child chunks, expand to parent context as needed
+
+### Cross-Page Content Handling
+
+```mermaid
+graph LR
+    P1[Page 5<br/>Last paragraph]
+    P2[Page 6<br/>First paragraph]
+
+    DETECT{Text<br/>Continues?}
+
+    MERGE[Merge into<br/>single chunk]
+    SPLIT[Keep separate<br/>add metadata]
+
+    C1[Chunk with<br/>pages 5-6]
+    C2[Chunk 5<br/>with metadata]
+    C3[Chunk 6<br/>with metadata]
 
     P1 --> DETECT
     P2 --> DETECT
@@ -275,132 +219,291 @@ graph LR
     style SPLIT fill:#2196F3
 ```
 
----
-
-## VLM + GPU Usage - Table Pages Only
-
-The system uses **Vision Language Models (VLM) with GPU** for pages containing tables to preserve structural integrity:
-
-| Page Type | Parser Used | GPU? | Cost | Examples |
-|-----------|-------------|------|------|----------|
-| **Text-only pages** | Textract/PyMuPDF | No | Low | Plain text contracts, letters, agreements |
-| **Simple tables** | Textract Tables | No | Medium | Basic 2-column tables, simple lists |
-| **Complex tables** | VLM (LlamaParse/Bedrock) | Yes | High | Merged cells, nested headers, multi-level tables |
-| **Scanned docs** | Textract OCR | No | Medium | Image-based PDFs (no tables) |
-
-### Table Detection Triggers VLM + GPU
-- ✅ **Tables with merged cells** - Visual boundaries needed
-- ✅ **Nested headers** - Multi-level column structure
-- ✅ **Complex grid layouts** - Irregular cell sizes
-- ✅ **Tables spanning pages** - Cross-page continuity
-- ✅ **Financial tables** - Numbers, calculations, currencies
-- ✅ **Legal tables** - Schedules, appendices, references
-
-### Cost Optimization
-- Page-level detection before VLM processing
-- Only table pages use expensive GPU resources
-- Text pages use cheaper text extraction
-- ~60-70% cost savings vs. processing all pages with VLM
-
----
-
-## Delta Update on Reupload
-
-When same file is reuploaded:
-1. Compare SHA-256 page hashes
-2. Identify changed pages
-3. Delete vectors ONLY from changed pages
-4. Re-index only changed pages
-5. Keep existing vectors from unchanged pages
-
-**Benefit**: Faster reuploads, reduced embedding costs
-
----
-
-## Page-Level Chunking with Cross-Page Tracking
-
-The chunking process operates at **page-level granularity** for two critical reasons:
-
-1. **PRIMARY: Table Detection** - Identify and route table pages to VLM+GPU
-2. **SECONDARY: Delta Updates** - Enable efficient re-processing of changed pages
-
-```
-Document → Pages → Table Detection → Chunking → Vectors
-                    ↓ (if table)
-                  VLM + GPU
+**Metadata for Cross-Page Chunks**:
+```json
+{
+  "chunk_id": "chunk-doc-001-pages-5-6",
+  "text": "...continued from page 5...",
+  "metadata": {
+    "page_numbers": [5, 6],
+    "cross_page": true,
+    "continued_from": 5,
+    "continues_to": 6
+  }
+}
 ```
 
-### Why Page-Level?
+---
 
-| Reason | Benefit |
-|--------|---------|
-| **Table Integrity** | Detect tables before chunking to preserve structure |
-| **Targeted GPU Usage** | Only table pages use expensive VLM resources |
-| **Efficient Updates** | Re-process only changed pages on re-upload |
-| **Cross-Page Tracking** | Handle content spanning page boundaries |
+## 4. Index Population
 
-### Process Flow
+The ingestion pipeline populates **2 indices** (simplified from original 6-index design):
 
-1. **Page Extraction**
-   - Split document into individual pages
-   - Each page gets a unique page_id
-   - Store page boundaries for reference
+### Index 1: Citation Index
 
-2. **Table Detection (PRIMARY GOAL)**
-   - Analyze page structure for tables
-   - Detect grid lines, tabular patterns
-   - Check for merged cells, complex layouts
-   - **If table found**: Route to VLM + GPU
-   - **If no table**: Use standard text extraction
+**Purpose**: Fast exact-match lookup for legal citations
 
-3. **Cross-Page Content Detection**
-   - Detect when text/tables span across pages
-   - Mark continuation relationships
-   - Track logical sentence boundaries across page breaks
-   - Add metadata: `cross_page: true`, `continued_from: page_N`, `continues_to: page_N+1`
+**Extraction Process**:
+```text
+For each chunk:
+  1. Detect citation patterns:
+     - Section citations: "Section 288-95", "s 288-95"
+     - Ruling citations: "TR 2022/1", "TD 2023/5"
+     - Case citations: "FCT v. Myer (1937)"
 
-4. **Page-by-Page Chunking**
-   - **Text pages**: Apply header-based or parent-child chunking
-   - **Table pages**: VLM extracts structured table with preserved integrity
-   - For cross-page content:
-     - Option A: Merge split content into single chunk (if < max size)
-     - Option B: Keep separate but add continuity metadata
-   - Tag each chunk with source page number
+  2. Normalize to canonical form
+  3. Generate aliases for matching variations
+  4. Extract hierarchy (parent/child sections)
 
-5. **Metadata Enrichment**
-   - Document ID, Session ID
-   - Page number(s) (single or range for cross-page)
-   - Content type: `text`, `table`, `cross_page_text`, `cross_page_table`
-   - Chunk position in page
-   - Cross-page flags and links
-   - Table structure (for table chunks): columns, rows, merged cells
+  5. Build citation document:
+     - canonical: "s-288-95"
+     - aliases: ["section-288-95", "s288-95", "sec-288-95"]
+     - chunk_pointers: [chunk IDs containing this citation]
+     - cross_references: [related citations]
+```
 
-### Example
+**OpenSearch Document**:
+```json
+{
+  "citation_id": "cit-itaa-1997-s-288-95",
+  "citation_canonical": "s-288-95",
+  "citation_aliases": ["section-288-95", "s288-95", "sec-288-95"],
+  "act": "ITAA 1997",
+  "title": "Failure to lodge return on time",
+  "chunk_pointers": ["chunk-itaa-1997-s-288-95-001", "chunk-itaa-1997-s-288-95-002"],
+  "cross_references": [
+    {"citation": "s-995-1", "type": "definition", "relationship": "defines_term"},
+    {"citation": "s-288-90", "type": "related_provision", "relationship": "related_to"}
+  ],
+  "metadata": {
+    "document_type": "tax_legislation",
+    "jurisdiction": "federal",
+    "kb_type": "static"
+  }
+}
+```
 
-| Chunk | Content | Page | Type | Processing |
-|-------|---------|------|------|------------|
-| Chunk 1 | "The party of the first part..." | 5 | Text | Standard chunking |
-| Chunk 2 | "Financial Schedule (table)" | 6 | Table | **VLM + GPU** |
-| Chunk 3 | "\| Year \| Revenue \|" | 6 | Table cell | **VLM extracted** |
-| Chunk 4 | "\| 2024 \| \$1.2M \|" | 6 | Table cell | **VLM extracted** |
-| Chunk 5 | "...hereby agrees to the terms..." | 6-7 | Cross-page text | Merged chunk |
-| Chunk 6 | "...continued from previous page" | 7 | Cross-page text | `continued_from: 6` |
+### Index 2: Unified Legal Index
 
-### Benefits Summary
+**Purpose**: Hybrid vector + BM25 search with metadata filtering and parent-child context
 
-| Benefit | Description |
-|---------|-------------|
-| **Table Integrity** (PRIMARY) | No broken columns/rows, VLM preserves structure |
-| **Targeted GPU Usage** | Only table pages use expensive VLM resources |
-| **Targeted Updates** | Re-process only changed pages |
-| **Context Preservation** | Track content across page boundaries |
-| **Efficient Retrieval** | Search includes cross-page context |
-| **Cost Savings** | Skip re-embedding unchanged pages |
+**Document Structure**:
+```json
+{
+  "chunk_id": "chunk-itaa-1997-s-288-95-001",
+  "chunk_type": "child",
+  "text": "A penalty of 210 penalty units applies...",
+  "embedding": [0.123, 0.456, ...],  // Titan v2, 1536 dimensions
+  "parent_chunk": {
+    "parent_id": "parent-itaa-1997-s-288-95",
+    "parent_text": "(1) An entity that fails to lodge..."
+  },
+  "metadata": {
+    "document_type": "tax_legislation",
+    "jurisdiction": "federal",
+    "act": "ITAA 1997",
+    "section": "288-95",
+    "year": 1997,
+    "status": "active",
+    "kb_type": "static"
+  },
+  "citations": ["s-288-95", "s-995-1"],
+  "keywords": ["penalty-units", "activity-statement"]
+}
+```
+
+**What's Included** (combines 6 indices into 2):
+
+| Original Index | Now Stored In |
+|----------------|---------------|
+| **Citation Index** | Separate citation-index (unchanged) |
+| **Semantic Index** | unified-legal-index (embedding field) |
+| **Keyword Index** | unified-legal-index (BM25 automatic) |
+| **Context Index** | unified-legal-index (parent_chunk field) |
+| **Metadata Index** | unified-legal-index (metadata field) |
+| **Cross-Reference Index** | citation-index (cross_references array) |
+
+---
+
+## 5. Metadata and Version Tracking
+
+### OpenSearch for Metadata
+
+**Index: document-metadata**
+```json
+{
+  "document_id": "itaa-1997",
+  "current_version": 5,
+  "document_type": "tax_legislation",
+  "title": "Income Tax Assessment Act 1997",
+  "source_url": "https://legislation.gov.au/...",
+  "file_hash": "a1b2c3d4...",
+  "chunk_count": 4500,
+  "citation_count": 890,
+  "last_ingested_at": "2026-03-30T02:15:00Z",
+  "ingestion_status": "COMPLETE",
+  "kb_type": "static",
+  "s3_version_id": "5z9LW7xTi..."
+}
+```
+
+**Index: user-document-metadata**
+```json
+{
+  "user_id": "user-123",
+  "document_id": "doc-user-123-001",
+  "filename": "my_tax_return_2024.pdf",
+  "file_size_bytes": 1048576,
+  "status": "COMPLETE",
+  "chunk_count": 45,
+  "uploaded_at": "2026-03-30T10:00:00Z",
+  "processed_at": "2026-03-30T10:02:30Z",
+  "kb_type": "user_upload"
+}
+```
+
+### S3 Versioning for History
+
+**Automatic version tracking**:
+```
+case-assistant-raw/static/itaa-1997.pdf
+  Version 1: 2026-01-01 (initial)
+  Version 2: 2026-02-01 (amendment)
+  Version 3: 2026-03-01 (amendment)
+  Version 4: 2026-03-15 (amendment)
+  Version 5: 2026-03-30 (current)
+```
+
+**Benefits**:
+- Automatic with S3 versioning enabled
+- All historical versions preserved
+- OpenSearch stores version metadata
+- Lifecycle policy manages old versions
+
+---
+
+## 6. AWS Services Step-by-Step
+
+### Static KB Ingestion Flow
+
+```
+Step 1: EventBridge triggers Lambda (monthly cron)
+Step 2: Lambda fetches from ATO sources
+Step 3: Store raw PDFs in S3: /raw/static/YYYY-MM-DD/
+Step 4: Lambda extracts pages, detects tables
+Step 5: Text pages → PyMuPDF, Table pages → Textract/VLM
+Step 6: Semantic chunking (800-1200 tokens)
+Step 7: Bedrock Titan v2 generates embeddings
+Step 8: OpenSearch bulk indexing
+Step 9: Update metadata in OpenSearch
+Step 10: SNS notification
+```
+
+### User Upload Ingestion Flow
+
+```
+Step 1: User calls API Gateway: POST /documents/upload-initiate
+Step 2: Cognito validates JWT
+Step 3: Lambda returns presigned S3 URL
+Step 4: User uploads directly to S3
+Step 5: S3 event triggers processing Lambda
+Step 6: Lambda extracts pages, detects tables
+Step 7: Text pages → PyMuPDF, Table pages → Textract/VLM
+Step 8: Semantic chunking (800-1200 tokens)
+Step 9: Bedrock Titan v2 generates embeddings
+Step 10: OpenSearch bulk indexing with user_id scope
+Step 11: Update user-document-metadata in OpenSearch
+Step 12: Create status file in S3
+Step 13: User polls or receives notification
+```
+
+---
+
+## 7. Full Refresh Ingestion (Current Approach)
+
+> **NOTE**: Incremental ingestion with delta detection was evaluated but **deferred for simplicity**. The current implementation uses full refresh for both knowledge bases.
+
+### Full Refresh Process
+
+```
+When document is re-ingested:
+  1. Compare file-level hash (SHA-256)
+  2. If unchanged: Skip processing
+  3. If changed:
+     a. Delete all existing vectors for document_id
+     b. Re-process all pages from scratch
+     c. Re-chunk, re-embed, re-index all content
+     d. Update metadata with new version
+     e. S3 versioning keeps history
+```
+
+**Benefits**:
+- Simpler implementation (2-3 days vs 2-3 weeks)
+- Guaranteed consistency (no partial states)
+- Easier debugging and maintenance
+- Sufficient for initial launch
+
+**When to Add Incremental (Phase 2)**:
+- Cost/benefit analysis shows >70% savings
+- Re-upload frequency >5x per document
+- User experience demands faster updates
+
+---
+
+## 8. Error Handling
+
+### Retry Strategy
+
+```
+Retry Configuration:
+  - Max retries: 3
+  - Backoff: Exponential (2^n seconds)
+  - Jitter: ±20% random
+  - Dead letter queue: Failed documents to S3 failed/
+```
+
+### Error Categories
+
+| Error Type | Detection | Recovery |
+|------------|-----------|----------|
+| **Source Fetch Failed** | HTTP errors | Retry with backoff |
+| **Textract Failed** | API timeout | Retry, fallback to PDF parser |
+| **Embedding Failed** | Bedrock API error | Retry, continue on rate limit |
+| **OpenSearch Failed** | Bulk API error | Retry failed chunks |
+| **User Upload Failed** | Validation error | Return error to user |
+
+---
+
+## 9. Monitoring
+
+### CloudWatch Metrics
+
+| Metric | Namespace | Alarm Threshold |
+|--------|-----------|-----------------|
+| **Ingestion Duration** | CaseAssistant/Ingestion | > 2 hours (static), > 5 min (user) |
+| **Textract API Errors** | CaseAssistant/Textract | > 5% |
+| **Bedrock API Errors** | CaseAssistant/Bedrock | > 1% |
+| **OpenSearch Index Errors** | CaseAssistant/OpenSearch | > 1% |
+| **User Upload Failures** | CaseAssistant/UserUpload | > 5% |
+
+### CloudWatch Dashboards
+
+**Static KB Dashboard**:
+- Last sync time and duration
+- Documents processed per sync
+- Error rates by service
+- Storage usage trends
+
+**User Upload Dashboard**:
+- Uploads per hour/day
+- Processing latency (p50, p95, p99)
+- Error rates by error type
+- Active users count
 
 ---
 
 ## Related Documents
 
-- **[01-chat-architecture.md](./01-chat-architecture.md)** - High-level chat architecture
-- **[06-core-components.md](./06-core-components.md)** - Technology mapping and component details
-- **[../system_designs_aws.md](../system_designs_aws.md)** - AWS-specific implementation
+- **[07-ingestion-strategies-comparison.md](./07-ingestion-strategies-comparison.md)** - Ingestion strategies and AWS service integration
+- **[13-chunking-strategies.md](./13-chunking-strategies.md)** - Detailed chunking strategies for legal documents
+- **[12-high-level-design.md](./12-high-level-design.md)** - Overall system architecture
