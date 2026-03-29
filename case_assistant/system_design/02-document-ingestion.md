@@ -13,7 +13,7 @@ The Case Assistant system processes documents through a unified pipeline that ex
 graph TB
     subgraph "Document Ingestion Pipeline"
         subgraph "Stage 1: Input"
-            STATIC[Scheduled Trigger<br/>EventBridge Monthly]
+            STATIC[Scheduled Trigger<br/>K8s CronJob Monthly]
             USER[User Upload<br/>API Gateway]
         end
 
@@ -22,7 +22,7 @@ graph TB
         end
 
         subgraph "Stage 3: Extraction"
-            TEXTRACT[Document Extraction<br/>Lambda + Textract]
+            TEXTRACT[Document Extraction<br/>K8s Job + Textract]
             TABLE_DETECT{Table Detected?<br/>Page-level check}
             TEXT_PARSE[Text Pages<br/>Standard parser]
             TABLE_PARSE[Table Pages<br/>VLM + GPU]
@@ -65,7 +65,341 @@ graph TB
 
 ---
 
-## 2. Page-Level Splitting for Table Detection
+## 2. User Upload Flow with Presigned URLs
+
+For user uploads, the system uses **presigned S3 URLs** to enable direct uploads from the user's browser to S3, bypassing the application servers.
+
+### Why Presigned URLs?
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Upload via API** | Simple to implement | Bottleneck at app servers, high memory usage |
+| **Presigned S3 URL** | Scalable, bypasses app servers, lower cost | Requires client-side multipart handling |
+
+### Presigned URL Flow
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Frontend
+    participant API Gateway
+    participant K8s Service
+    participant S3
+    participant S3 Watcher
+
+    User->>Frontend: Select file to upload
+    Frontend->>API Gateway: POST /documents/upload-initiate
+    API Gateway->>K8s Service: Validate JWT, generate document_id
+    K8s Service->>S3: Generate presigned URL (POST /uploads/{user_id}/{doc_id}.pdf)
+    S3-->>K8s Service: Return presigned URL
+    K8s Service-->>API Gateway: Return upload URL + document_id
+    API Gateway-->>Frontend: Return {document_id, upload_url, expires_at}
+    Frontend->>S3: PUT {upload_url} (direct upload, multipart/form-data)
+    S3-->>Frontend: 200 OK
+    Frontend->>API Gateway: POST /documents/{document_id}/upload-complete
+    API Gateway->>K8s Service: Update status to "UPLOADED"
+    S3->>S3 Watcher: s3:ObjectCreated:* event
+    S3 Watcher->>K8s Job: Trigger processing pipeline
+```
+
+### Step-by-Step Presigned URL Process
+
+#### Step 1: Upload Initiation
+
+**API Request**:
+```http
+POST /api/v1/documents/upload-initiate
+Authorization: Bearer {jwt_token}
+Content-Type: application/json
+
+{
+  "filename": "my_tax_return.pdf",
+  "file_size_bytes": 1048576,
+  "content_type": "application/pdf"
+}
+```
+
+**K8s Service Processing**:
+```yaml
+# Kubernetes Service/Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: case-assistant-api
+spec:
+  selector:
+    app: case-assistant
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: case-assistant-api-pod
+spec:
+  containers:
+  - name: api
+    image: case-assistant/api:latest
+    env:
+    - name: AWS_REGION
+      value: "ap-southeast-2"
+    - name: S3_UPLOAD_BUCKET
+      value: "case-assistant-uploads"
+```
+
+**Presigned URL Generation**:
+```python
+import boto3
+from datetime import datetime, timedelta
+
+def generate_presigned_url(user_id: str, document_id: str, filename: str) -> dict:
+    """
+    Generate presigned S3 URL for direct upload.
+    """
+    s3_client = boto3.client('s3')
+
+    # S3 key: /uploads/{user_id}/{document_id}.pdf
+    s3_key = f"uploads/{user_id}/{document_id}.pdf"
+
+    # Generate presigned POST URL (for file upload)
+    presigned_url = s3_client.generate_presigned_post(
+        Bucket="case-assistant-uploads",
+        Key=s3_key,
+        Fields={"Content-Type": "application/pdf"},
+        ExpiresIn=3600  # 1 hour
+    )
+
+    # Create initial metadata record
+    metadata = {
+        "document_id": document_id,
+        "user_id": user_id,
+        "filename": filename,
+        "s3_key": s3_key,
+        "status": "INITIATED",
+        "created_at": datetime.utcnow().isoformat(),
+        "expires_at": (datetime.utcnow() + timedelta(hours=1)).isoformat()
+    }
+
+    # Store initial metadata in OpenSearch
+    opensearch.index(
+        index="user-document-metadata",
+        id=document_id,
+        body=metadata
+    )
+
+    return {
+        "document_id": document_id,
+        "upload_url": presigned_url["url"],
+        "fields": presigned_url["fields"],
+        "s3_key": s3_key,
+        "expires_at": metadata["expires_at"]
+    }
+```
+
+**API Response**:
+```json
+{
+  "document_id": "doc-user-123-1711800000",
+  "upload_url": "https://case-assistant-uploads.s3.amazonaws.com/",
+  "method": "POST",
+  "fields": {
+    "key": "uploads/user-123/doc-user-123-1711800000.pdf",
+    "Content-Type": "application/pdf",
+    "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+    "X-Amz-Credential": "...",
+    "X-Amz-Date": "...",
+    "X-Amz-Expires": "1711803600",
+    "X-Amz-SignedHeaders": "host;x-amz-content-sha256",
+    "X-Amz-Signature": "..."
+  },
+  "expires_at": "2026-03-30T11:00:00Z"
+}
+```
+
+#### Step 2: Client-Side Upload
+
+**Frontend Upload Handler**:
+```typescript
+// Frontend (React/TypeScript)
+async function uploadDocument(file: File, documentId: string, uploadData: any) {
+  const formData = new FormData();
+
+  // Add S3 required fields
+  Object.entries(uploadData.fields).forEach(([key, value]) => {
+    formData.append(key, value);
+  });
+
+  // Add the file
+  formData.append('file', file);
+
+  // Direct upload to S3 (bypasses application servers)
+  const response = await fetch(uploadData.upload_url, {
+    method: 'POST',
+    body: formData
+  });
+
+  if (!response.ok) {
+    throw new Error('Upload failed');
+  }
+
+  // Notify backend that upload is complete
+  await fetch(`/api/v1/documents/${documentId}/upload-complete`, {
+    method: 'POST'
+  });
+
+  return { success: true, documentId };
+}
+```
+
+#### Step 3: S3 Event Triggers Processing
+
+**S3 Event Notification** → **K8s S3 Watcher**:
+
+```yaml
+# Kubernetes Deployment: S3 Event Watcher
+apiVersion: v1
+kind: Deployment
+metadata:
+  name: s3-event-watcher
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: s3-watcher
+  template:
+    metadata:
+      labels:
+        app: s3-watcher
+    spec:
+      containers:
+      - name: watcher
+        image: case-assistant/s3-watcher:latest
+        env:
+        - name: S3_BUCKET
+          value: "case-assistant-uploads"
+        - name: S3_PREFIX
+          value: "uploads/"
+        - name: SQS_QUEUE_URL
+          value: "https://sqs.ap-southeast-2.amazonaws.com/..."
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+```
+
+**S3 Watcher Logic**:
+```python
+# S3 Event Watcher (runs in K8s)
+import boto3
+import json
+
+def process_s3_events():
+    """Poll SQS for S3 events and trigger processing jobs."""
+    sqs_client = boto3.client('sqs')
+
+    while True:
+        messages = sqs_client.receive_message(
+            QueueUrl=os.getenv('SQS_QUEUE_URL'),
+            MaxNumberOfMessages=10,
+            WaitTimeSeconds=20
+        )
+
+        for message in messages['Messages']:
+            event = json.loads(message['Body'])
+
+            # Extract S3 object info
+            bucket = event['Records'][0]['s3']['bucket']['name']
+            key = event['Records'][0]['s3']['object']['key']
+
+            # Parse user_id and document_id from key
+            # Key format: uploads/{user_id}/{document_id}.pdf
+            parts = key.split('/')
+            user_id = parts[1]
+            document_id = parts[2].replace('.pdf', '')
+
+            # Trigger processing job
+            trigger_processing_job(document_id, user_id, bucket, key)
+
+            # Delete message from queue
+            sqs_client.delete_message(
+                QueueUrl=os.getenv('SQS_QUEUE_URL'),
+                ReceiptHandle=message['ReceiptHandle']
+            )
+```
+
+#### Step 4: Status Tracking
+
+**S3 Status File**:
+```
+s3://case-assistant-uploads/user-123/doc-user-123-001-status.json
+```
+
+```json
+{
+  "document_id": "doc-user-123-001",
+  "user_id": "user-123",
+  "status": "PROCESSING",
+  "progress": 25,
+  "stage": "EXTRACTING_PAGES",
+  "started_at": "2026-03-30T10:00:00Z",
+  "updated_at": "2026-03-30T10:02:30Z"
+}
+```
+
+**Status Polling Endpoint**:
+```http
+GET /api/v1/documents/{document_id}/status
+Authorization: Bearer {jwt_token}
+
+Response:
+{
+  "document_id": "doc-user-123-001",
+  "status": "COMPLETE",
+  "progress": 100,
+  "stage": "READY",
+  "chunk_count": 45,
+  "ready_for_query": true,
+  "completed_at": "2026-03-30T10:03:45Z"
+}
+```
+
+### Security Considerations
+
+| Concern | Mitigation |
+|---------|------------|
+| **Unauthorized uploads** | Presigned URL requires specific key, expires in 1 hour |
+| **File size limits** | Validate size at initiation (e.g., max 100MB) |
+| **Content type validation** | Whitelist allowed types, validate during initiation |
+| **User isolation** | S3 key includes user_id, enforce via IAM policy |
+| **Malicious files** | Virus scanning after upload, sandbox processing |
+
+### IAM Policy for S3 Presigned URLs
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:PutObjectAcl"
+      ],
+      "Resource": "arn:aws:s3:::case-assistant-uploads/uploads/${aws:username}/*",
+      "Condition": {
+        "StringEquals": {
+          "s3:x-amz-acl": "bucket-owner-full-control"
+        }
+      }
+    }
+  ]
+}
+```
+
+---
+
+## 3. Page-Level Splitting for Table Detection
 
 The primary reason for splitting documents into pages is to **detect and handle tables separately** to preserve their structural integrity.
 
@@ -387,10 +721,10 @@ case-assistant-raw/static/itaa-1997.pdf
 ### Static KB Ingestion Flow
 
 ```
-Step 1: EventBridge triggers Lambda (monthly cron)
-Step 2: Lambda fetches from ATO sources
+Step 1: K8s CronJob triggers K8s Job (monthly cron)
+Step 2: K8s Job fetches from ATO sources
 Step 3: Store raw PDFs in S3: /raw/static/YYYY-MM-DD/
-Step 4: Lambda extracts pages, detects tables
+Step 4: K8s Job extracts pages, detects tables
 Step 5: Text pages → PyMuPDF, Table pages → Textract/VLM
 Step 6: Semantic chunking (800-1200 tokens)
 Step 7: Bedrock Titan v2 generates embeddings
@@ -404,10 +738,10 @@ Step 10: SNS notification
 ```
 Step 1: User calls API Gateway: POST /documents/upload-initiate
 Step 2: Cognito validates JWT
-Step 3: Lambda returns presigned S3 URL
+Step 3: K8s Job returns presigned S3 URL
 Step 4: User uploads directly to S3
-Step 5: S3 event triggers processing Lambda
-Step 6: Lambda extracts pages, detects tables
+Step 5: S3 event triggers processing K8s Job
+Step 6: K8s Job extracts pages, detects tables
 Step 7: Text pages → PyMuPDF, Table pages → Textract/VLM
 Step 8: Semantic chunking (800-1200 tokens)
 Step 9: Bedrock Titan v2 generates embeddings
