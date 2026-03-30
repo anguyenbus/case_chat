@@ -528,6 +528,94 @@ sequenceDiagram
     API-->>U: {status: COMPLETE, chunk_count: 45}
 ```
 
+---
+
+### The Journey of a Document
+
+This section traces the complete journey of a single document from user upload to ready-to-query status. Consider a tax professional named Sarah uploading a 52-page tax return PDF.
+
+#### Phase 1: Upload Initiation
+
+Sarah selects her client's tax return PDF and clicks **Upload**. Her browser sends a request to `POST /documents/upload-initiate` with the filename, file size, and content type.
+
+The request flows through **API Gateway**, where **Amazon Cognito** validates her JWT token—establishing that she is who she claims to be. The request then reaches the **API Service** running in EKS, which performs three checks:
+
+1. **Quota check**: Has Sarah exceeded her document or storage limit?
+2. **File size check**: Is the file under the 100MB maximum?
+3. **Content type check**: Is the file type supported (PDF, DOCX, MD, PNG, JPG)?
+
+All checks pass. The API Service generates a unique `document_id` and creates an initial record in **OpenSearch** with status `INITIATED`. It then requests a **presigned URL** from S3—a secure, one-time upload credential valid for one hour.
+
+Sarah's browser receives the presigned URL along with her `document_id` and the expiration timestamp.
+
+#### Phase 2: Direct Upload to S3
+
+Sarah's browser now uploads the file directly to S3 using the presigned URL. The file travels from her computer, through the internet, straight into the `case-assistant-uploads` bucket under the path `uploads/{user_id}/{document_id}.pdf`.
+
+**This upload bypasses application servers entirely.** This design choice is critical for scalability—if thousands of users upload simultaneously, the traffic goes directly to S3 rather than bottlenecking through API servers.
+
+When the upload completes, S3 returns a success response. Sarah's browser then calls `POST /documents/{document_id}/upload-complete`. The API Service updates OpenSearch: status is now `UPLOADED`.
+
+#### Phase 3: Event Notification
+
+The moment Sarah's file lands in S3, S3 generates an `s3:ObjectCreated:*` event. However, this event is not sent directly to our processing system. Instead, it goes into an **SQS queue**.
+
+This buffer serves a crucial purpose: systems fail, networks hiccup, pods restart. SQS holds the message reliably, ensuring no event is lost even if downstream services are temporarily unavailable.
+
+#### Phase 4: The S3 Watcher
+
+Running in EKS is a **S3 Watcher** Deployment—typically 2 replicas continuously polling the SQS queue. The Watcher receives Sarah's upload event and parses the S3 key to extract her `user_id` and `document_id`.
+
+Before any processing begins, the Watcher performs an **idempotency check**. It queries OpenSearch for the document's current status:
+
+- If status is `PROCESSING` or `COMPLETE`: The Watcher skips this event (duplicate delivery from SQS)
+- If status is `UPLOADED` or `FAILED`: The Watcher proceeds with processing
+- If status is `INITIATED` but upload expired: The Watcher checks if the file actually exists in S3 for potential recovery
+
+Assuming status is `UPLOADED`, the Watcher updates OpenSearch to `PROCESSING` and triggers a **Kubernetes Job** named `ingest-{document_id}`. This Job will handle all remaining processing steps for Sarah's document.
+
+The Watcher and the Ingest Job are **separate pods**. The Watcher is a long-running Deployment that polls continuously. The Ingest Job is created dynamically per document, runs once to completion, then terminates.
+
+#### Phase 5: Content Extraction
+
+The Ingest Job downloads Sarah's tax return from S3 and begins content extraction. The PDF contains 52 pages—a mix of text, financial tables, and forms.
+
+The Job scans each page with **fast heuristics** (counting vector lines, analyzing text density, detecting column patterns). Most pages show no table indicators and are routed to the standard text parser.
+
+On page 4, the heuristics flag a potential table. The Job sends this page to **Amazon Textract** for confirmation. Textract confirms: a capital allowance schedule is present. The Job then sends it to **Bedrock Multimodal** (a vision-language model), which extracts the table as structured JSON while preserving column headers, row mappings, and merged cells.
+
+All extracted content—text from standard pages, structured data from tables—is now ready for chunking.
+
+#### Phase 6: Chunking and Embedding
+
+The 52-page document is too large to search as a single unit. The Job breaks it into **chunks** of 800-1,200 tokens each, using intelligent boundary detection rather than arbitrary cuts.
+
+For each chunk, the Job generates **parent-child relationships**. Child chunks (800-1,200 tokens) enable precise search results. Parent chunks (2,400-3,600 tokens) provide broader context when needed.
+
+Each chunk is then sent to **Amazon Bedrock Titan v2** to generate embeddings. The model converts text into a 1,536-dimensional vector that captures semantic meaning—words like "tax penalty" and "late fine" receive similar vectors even though they share no words.
+
+#### Phase 7: Indexing
+
+The Job performs a bulk write to **OpenSearch**, indexing:
+
+- **Chunks** with their embeddings into the `unified-legal-index`
+- **Metadata** including document_id, user_id, chunk_type, and parent references
+- **Status update** to the `user-document-metadata` index
+
+Critical to this design: **every chunk is tagged with Sarah's tenant_id**. When she searches, she sees her uploaded documents plus the public Static KB. She never sees another user's uploads. Query-time filtering ensures complete isolation.
+
+#### Phase 8: Completion and Notification
+
+The Job updates the document metadata in OpenSearch: `status = COMPLETE`, `completed_at = {timestamp}`, `chunk_count = 45`.
+
+The Job then connects to **API Gateway WebSocket** (`/ws/status`) and broadcasts a completion message. Sarah's browser—still maintaining a WebSocket connection—receives the notification instantly: *"Your document is ready."*
+
+Sarah refreshes her search interface. She queries: *"What capital allowances are claimed for the depreciating asset?"* The system returns the precise chunk from page 4, the table we extracted, highlighted with the answer.
+
+**Total elapsed time: approximately 2 minutes.**
+
+---
+
 ### 3.1.1 Service Architecture Diagram
 
 ```mermaid
