@@ -528,7 +528,99 @@ sequenceDiagram
     API-->>U: {status: COMPLETE, chunk_count: 45}
 ```
 
-### 3.1.1 Step-by-Step Upload Flow Walkthrough
+### 3.1.1 Service Architecture Diagram
+
+```mermaid
+graph TB
+    subgraph "Phase 1: Upload Initiation"
+        direction TB
+        CLIENT1[User Browser]
+        API1[API Gateway<br/>JWT Validation]
+        K8S1[K8s API Service<br/>Quota Check<br/>Duplicate Check]
+        S3_PRE[S3<br/>Generate Presigned URL<br/>Expires: 1 hour]
+        OS1[OpenSearch<br/>Create Metadata<br/>status: INITIATED]
+
+        CLIENT1 --> API1
+        API1 --> K8S1
+        K8S1 --> OS1
+        K8S1 --> S3_PRE
+        S3_PRE --> K8S1
+        K8S1 --> API1
+        API1 --> CLIENT1
+    end
+
+    subgraph "Phase 2: File Upload"
+        direction TB
+        CLIENT2[User Browser<br/>Direct Upload]
+        S3_UP[S3 Bucket<br/>Store File<br/>uploads/user-id/doc-id.pdf]
+        S3_EVT[S3 Event<br/>s3:ObjectCreated]
+
+        CLIENT2 --> S3_UP
+        S3_UP --> S3_EVT
+    end
+
+    subgraph "Phase 3: Upload Confirmation"
+        direction TB
+        CLIENT3[User Browser]
+        API3[API Gateway]
+        K8S3[K8s API Service<br/>Update Status]
+        OS3[OpenSearch<br/>status: UPLOADED]
+
+        CLIENT3 --> API3
+        API3 --> K8S3
+        K8S3 --> OS3
+        K8S3 --> API3
+        API3 --> CLIENT3
+    end
+
+    subgraph "Phase 4: Event Processing"
+        direction TB
+        SQS[SQS Queue<br/>Event Buffer]
+        WATCHER[S3 Watcher<br/>K8s Deployment<br/>Poll SQS]
+        OS4[OpenSearch<br/>Idempotency Check<br/>status: PROCESSING]
+        JOB[K8s Job<br/>ingest-doc-id]
+
+        S3_EVT --> SQS
+        SQS --> WATCHER
+        WATCHER --> OS4
+        OS4 --> JOB
+    end
+
+    subgraph "Phase 5: Document Processing"
+        direction TB
+        S3_DL[S3<br/>Download File]
+        EXTRACT[Extractor<br/>Pages + Tables]
+        CHUNK[Chunker<br/>800-1200 tokens]
+        EMBED[Bedrock Titan v2<br/>Embeddings]
+        OS_IDX[OpenSearch<br/>Bulk Index]
+
+        JOB --> S3_DL
+        S3_DL --> EXTRACT
+        EXTRACT --> CHUNK
+        CHUNK --> EMBED
+        EMBED --> OS_IDX
+    end
+
+    subgraph "Phase 6: Completion & Notification"
+        direction TB
+        OS_COMPLETE[OpenSearch<br/>status: COMPLETE]
+        WS[WebSocket Service<br/>Broadcast]
+        CLIENT4[User Browser<br/>Real-time Update]
+
+        OS_IDX --> OS_COMPLETE
+        OS_COMPLETE --> WS
+        WS --> CLIENT4
+    end
+
+    style API1 fill:#FF9800
+    style S3_PRE fill:#FF5722
+    style S3_UP fill:#FF5722
+    style WATCHER fill:#2196F3
+    style JOB fill:#9C27B0
+    style WS fill:#4CAF50
+```
+
+### 3.1.2 Step-by-Step Upload Flow Walkthrough
 
 #### Step 1: Upload Initiation
 
