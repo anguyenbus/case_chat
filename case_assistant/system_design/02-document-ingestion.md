@@ -951,6 +951,110 @@ This two-layer idempotency—status checks at the S3 Watcher level and Job exist
 
 ---
 
+## 3.4 Design Discussion: DynamoDB for State Management
+
+The current design uses OpenSearch for storing document metadata and status. An alternative approach is Amazon DynamoDB—a managed NoSQL database optimized for fast key-value access at scale.
+
+---
+
+### How DynamoDB Could Be Used
+
+| Use Case | Current (OpenSearch) | With DynamoDB |
+|----------|---------------------|---------------|
+| **Document metadata** | `user-document-metadata` index | `Documents` table (partition key: document_id) |
+| **Upload session state** | Stored in metadata index | `Sessions` table (partition key: session_token, TTL: 1 hour) |
+| **Job tracking** | Inferred from status field | `Jobs` table (partition key: job_name, status as sort key) |
+| **Idempotency tokens** | Ad-hoc queries on metadata | `Idempotency` table (partition key: document_id + attempt_id) |
+
+---
+
+### DynamoDB Advantages
+
+**Performance**
+- Single-digit millisecond reads/writes at any scale
+- Predictable performance regardless of data size
+- No cold starts, no query planning overhead
+
+**Cost Efficiency for State Data**
+- Pay-per-request pricing model
+- On-demand capacity scales automatically
+- No provisioned instances to manage
+
+**Operational Simplicity**
+- Fully managed, zero server maintenance
+- Built-in TTL for session cleanup
+- Native support for counters and atomic updates
+
+**Expressive Power for State Machines**
+- Conditional writes (`PutItem` with `ConditionExpression`)
+- Atomic transactions across multiple items
+- Optimistic locking with version numbers
+
+---
+
+### DynamoDB Disadvantages
+
+**Additional Service Complexity**
+- One more AWS service to operate and monitor
+- Adds to AWS bill (separate line item)
+- Team needs DynamoDB expertise
+
+**Data Duplication**
+- Chunks still need OpenSearch (DynamoDB doesn't do vector search)
+- Metadata in two places (DynamoDB + OpenSearch) or query OpenSearch for content
+- Eventual consistency if synchronizing
+
+**Limited Query Flexibility**
+- No full-text search without additional services
+- Complex queries require secondary indexes (cost)
+- Aggregations require scans or streams
+
+---
+
+### Comparison: OpenSearch vs DynamoDB for Metadata
+
+| Aspect | OpenSearch | DynamoDB |
+|--------|-----------|----------|
+| **Read latency** | 10-50ms (variable) | 1-10ms (consistent) |
+| **Write latency** | 50-200ms (bulk optimized) | 1-10ms (per item) |
+| **Query capability** | Full-text, filters, aggregations | Key-value, simple filters only |
+| **Vector search** | Built-in k-NN | Not supported |
+| **Cost at current scale** | Included (already needed for search) | Additional cost (~$20-50/month) |
+| **Operational overhead** | One service | Two services |
+| **State management** | Possible | Purpose-built |
+
+---
+
+### When DynamoDB Makes Sense
+
+| Trigger | Reason |
+|---------|--------|
+| **Scale: 100K+ daily uploads** | OpenSearch write pressure increases, DynamoDB scales better |
+| **Session state complexity** | Multi-step workflows, abandoned upload detection at scale |
+| **Strong consistency required** | Cross-service coordination needs transactional guarantees |
+| **Cost optimization** | High-volume metadata reads cheaper on DynamoDB than OpenSearch |
+
+---
+
+### Recommendation: Current Design
+
+**For the current scale (1,000 daily uploads, 10K static documents):** OpenSearch is sufficient.
+
+**Rationale:**
+1. **Simplicity:** One database instead of two reduces operational complexity
+2. **Cost:** No additional service bill
+3. **Adequate performance:** 50-200ms write latency is acceptable for this use case
+4. **Query needs:** Full-text search on metadata is occasionally useful
+5. **Team expertise:** Fewer services to learn and maintain
+
+**When to add DynamoDB (Phase 2):**
+- Upload volume exceeds 50K per day
+- Session state becomes complex (multi-step workflows)
+- Strong consistency requirements emerge
+- OpenSearch write performance becomes a bottleneck
+
+---
+
 ## 4. Document Format Support
 
 ### 4.1 Supported Formats
