@@ -528,6 +528,137 @@ sequenceDiagram
     API-->>U: {status: COMPLETE, chunk_count: 45}
 ```
 
+### 3.1.1 Step-by-Step Upload Flow Walkthrough
+
+#### Step 1: Upload Initiation
+
+**1.1 Client Initiates Upload**
+- User selects file in browser and clicks "Upload"
+- Frontend sends `POST /documents/upload-initiate` with:
+  - `filename`: Original filename
+  - `file_size_bytes`: For validation and quota checking
+  - `content_type`: MIME type (e.g., `application/pdf`)
+  - `client_hash`: SHA-256 calculated client-side (optional, for early duplicate detection)
+
+**1.2 Server Validation**
+- API Gateway validates JWT token, extracts `user_id`
+- K8s Service checks:
+  - User quota (max documents, total storage)
+  - File size limits (100MB max per file)
+  - Content type whitelist (PDF, DOCX, MD, PNG, JPG allowed)
+
+**1.3 Duplicate Check (Optimization)**
+- If `client_hash` provided, query OpenSearch for existing documents with same hash + user_id
+- **If exact duplicate found and COMPLETE:** Return immediately with existing document info (skip upload)
+- **If duplicate found but PROCESSING:** Return "in progress" status
+- **If no duplicate:** Proceed to generate presigned URL
+- **Note:** Client hash is only an optimization hint. Server calculates its own hash after upload for security.
+
+**1.4 Generate Presigned URL**
+- S3 generates presigned POST URL with:
+  - Key: `uploads/{user_id}/{document_id}.pdf`
+  - Expiration: 1 hour
+  - Conditions: Content-Type must match, max file size enforced
+- Create metadata record in OpenSearch: `status = INITIATED`, `upload_expires_at = now + 1 hour`
+- Return to client: `{document_id, upload_url, fields, expires_at}`
+
+---
+
+#### Step 2: Client-Side Upload
+
+**2.1 Direct Upload to S3**
+- Client browser uploads directly to S3 using presigned URL
+- **Bypasses application servers** → scalable, no bottleneck
+- Uses multipart/form-data encoding
+- S3 validates conditions (file size, content type) before accepting
+
+**2.2 Upload Completion**
+- On success (HTTP 200), client calls `POST /documents/{document_id}/upload-complete`
+- Server updates OpenSearch: `status = UPLOADED`
+- Client receives acknowledgment
+
+**Why the Two-Step Client Flow?**
+- Separating upload initiation from completion allows the server to detect orphaned uploads
+- If S3 succeeds but upload-complete never called, the abandoned-upload detector can recover
+
+---
+
+#### Step 3: S3 Event Trigger
+
+**3.1 S3 Event Notification**
+- When object is created, S3 sends `s3:ObjectCreated:*` event to SQS
+- Event includes: bucket name, object key, object size, event time
+- SQS queues events for reliable delivery
+
+**3.2 S3 Watcher Polls**
+- K8s S3 Watcher service polls SQS continuously (long polling, 20-second wait)
+- Pulls up to 10 messages per batch
+- Each message contains one S3 event
+
+**Why SQS Instead of Direct S3 Event to K8s?**
+- S3 events are "at least once" delivery - can be duplicated or delayed
+- SQS provides buffering, deduplication, and reliable processing
+- If K8s pod restarts, events remain in queue for processing
+
+---
+
+#### Step 4: Idempotency Check
+
+**4.1 Parse Event**
+- Extract S3 key: `uploads/{user_id}/{document_id}.pdf`
+- Parse `user_id` and `document_id` from key path
+
+**4.2 Check Current Status**
+- Query OpenSearch for document metadata
+- **If status = PROCESSING or COMPLETE:** Skip this event (duplicate)
+- **If status = UPLOADED or FAILED:** Proceed to processing
+- **If status = INITIATED and upload expired:** Check if file exists in S3
+
+**4.3 Update Status**
+- Mark document as `status = PROCESSING`
+- This prevents duplicate processing if another S3 event arrives
+
+---
+
+#### Step 5: K8s Ingest Job
+
+**5.1 Trigger Job**
+- S3 Watcher creates K8s Job with name: `ingest-{document_id}`
+- Job includes: document_id, S3 bucket, S3 key
+- Job-level idempotency: If job already exists and running, skip trigger
+
+**5.2 Download and Extract**
+- Job downloads document from S3
+- Calculate server-side SHA-256 hash (authoritative)
+- Run format detection and page extraction
+- Execute table detection (two-stage process)
+
+**5.3 Chunk and Embed**
+- Apply chunking strategy (fixed-size with overlap for user uploads)
+- Generate embeddings using Bedrock Titan v2
+- Extract metadata (citations, keywords)
+
+---
+
+#### Step 6: Indexing and Completion
+
+**6.1 OpenSearch Bulk Index**
+- Write chunks to `unified-legal-index` with `user_id` filter
+- All user chunks are scoped to the uploading user
+- Update document metadata with chunk count and status
+
+**6.2 Status Update and Notification**
+- Update document: `status = COMPLETE`, `completed_at = timestamp`
+- Send WebSocket message to connected clients: `{document_id, status: COMPLETE}`
+- Client receives real-time notification (or polls status endpoint)
+
+**6.3 User Can Query**
+- Document is now searchable in user's queries
+- User's uploaded chunks are isolated to their user_id
+- Static KB chunks are still accessible to all users
+
+---
+
 ### 3.2 Document Status State Machine
 
 ```mermaid
