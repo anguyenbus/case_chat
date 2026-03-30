@@ -939,6 +939,16 @@ graph TB
     style TRIGGER fill:#4CAF50
 ```
 
+#### Why Idempotency Protection Matters
+
+Amazon S3 event notifications use **at-least-once delivery**. This means a single upload can generate multiple events—SQS may deliver the same message twice, events may arrive out of order, or delayed by minutes. Without idempotency protection, the system would process the same document multiple times, wasting resources and potentially causing data corruption.
+
+The S3 Watcher addresses this by checking the document's current status in OpenSearch before taking any action. Only documents in `UPLOADED` or `FAILED` status trigger processing. Documents already `PROCESSING` or `COMPLETE` are skipped. This check happens before any K8s Job is created.
+
+For additional safety, the K8s Job creation itself is idempotent. Each Job is named `ingest-{document_id}`. The Watcher checks if a Job with this name already exists before creation. If the Job exists and is actively running, the trigger is skipped. If the Job exists but failed, it is deleted and recreated for a retry attempt.
+
+This two-layer idempotency—status checks at the S3 Watcher level and Job existence checks at the orchestration level—ensures that duplicate S3 events never result in duplicate processing.
+
 ---
 
 ## 4. Document Format Support
@@ -1644,6 +1654,12 @@ graph TB
 ## 12. Full Refresh vs Incremental
 
 ### 12.1 Current Approach: Full Refresh
+
+The system uses a full refresh strategy for both Static KB and User Uploads. When a document is re-ingested, we compare its SHA-256 hash against the previous version. If the hash is unchanged, processing is skipped entirely—no wasted computation. If the hash differs, we delete all existing chunks and citations from OpenSearch and re-process the entire document from scratch.
+
+This approach prioritizes simplicity and correctness. Full refresh eliminates partial states, ensures no orphaned data remains, and guarantees consistency between the document and its indexed representation. Debugging is straightforward—either the document processed successfully or it didn't.
+
+For the Static KB, full refresh is acceptable because only ~20-40% of documents change monthly, and the 1-2 hour processing window occurs during off-peak hours. For User Uploads, full refresh completes in 1-3 minutes, which is acceptable for the upload use case. The trade-off is re-embedding cost for changed documents, but this is acceptable for the current scale. When the system grows or users demand faster re-upload times, we can migrate to an incremental strategy.
 
 ```mermaid
 graph LR
