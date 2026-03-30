@@ -104,7 +104,7 @@ sequenceDiagram
 
 ### Step-by-Step Presigned URL Process
 
-#### Step 1: Upload Initiation
+#### Step 1: Upload Initiation with Duplicate Detection
 
 **API Request**:
 ```http
@@ -115,8 +115,103 @@ Content-Type: application/json
 {
   "filename": "my_tax_return.pdf",
   "file_size_bytes": 1048576,
-  "content_type": "application/pdf"
+  "content_type": "application/pdf",
+  "sha256_hash": "a1b2c3d4..."  // Client calculates hash
 }
+```
+
+**K8s Service Processing**:
+```python
+def handle_upload_initiation(user_id: str, filename: str, file_hash: str) -> dict:
+    """
+    Handle upload initiation with duplicate detection.
+    """
+    # Step 1: Check if document with same hash already exists for this user
+    existing_doc = check_existing_document(user_id, file_hash)
+
+    if existing_doc:
+        # Same file already uploaded
+        if existing_doc['status'] == 'COMPLETE':
+            return {
+                "document_id": existing_doc['document_id'],
+                "status": "SKIP",
+                "message": "Document already exists and is processed",
+                "existing_document": {
+                    "document_id": existing_doc['document_id'],
+                    "filename": existing_doc['filename'],
+                    "uploaded_at": existing_doc['uploaded_at'],
+                    "chunk_count": existing_doc['chunk_count']
+                },
+                "action_required": "none"
+            }
+        elif existing_doc['status'] == 'PROCESSING':
+            return {
+                "status": "IN_PROGRESS",
+                "message": "Document is currently being processed",
+                "document_id": existing_doc['document_id'],
+                "action_required": "wait"
+            }
+
+    # Step 2: New document or different version
+    document_id = f"doc-{user_id}-{int(datetime.now().timestamp())}"
+    s3_key = f"uploads/{user_id}/{document_id}.pdf"
+
+    # Step 3: Generate presigned POST URL
+    presigned_post = s3_client.generate_presigned_post(
+        Bucket="case-assistant-uploads",
+        Key=s3_key,
+        Fields={"Content-Type": "application/pdf"},
+        ExpiresIn=3600
+    )
+
+    # Step 4: Create initial metadata record with hash
+    metadata = {
+        "document_id": document_id,
+        "user_id": user_id,
+        "filename": filename,
+        "file_hash": file_hash,
+        "s3_key": s3_key,
+        "status": "INITIATED",
+        "upload_expires_at": (datetime.utcnow() + timedelta(hours=1)).isoformat()
+    }
+
+    opensearch.index(
+        index="user-document-metadata",
+        id=document_id,
+        body=metadata
+    )
+
+    return {
+        "document_id": document_id,
+        "upload_url": presigned_post["url"],
+        "fields": presigned_post["fields"],
+        "expires_at": metadata["upload_expires_at"],
+        "action_required": "upload_file"
+    }
+
+def check_existing_document(user_id: str, file_hash: str) -> dict | None:
+    """
+    Check if document with same hash already exists for this user.
+    Returns document metadata if found, None otherwise.
+    """
+    response = opensearch.search(
+        index="user-document-metadata",
+        body={
+            "query": {
+                "bool": {
+                    "must": [
+                        {"term": {"user_id": user_id}},
+                        {"term": {"file_hash": file_hash}}
+                    ]
+                }
+            },
+            "size": 1
+        }
+    )
+
+    if response['hits']['hits']['total']['value'] > 0:
+        return response['hits']['hits'][0]['_source']
+    return None
 ```
 
 **K8s Service Processing**:
@@ -374,7 +469,42 @@ Response:
 | **User isolation** | S3 key includes user_id, enforce via IAM policy |
 | **Malicious files** | Virus scanning after upload, sandbox processing |
 
-### IAM Policy for S3 Presigned URLs
+### Duplicate Document Handling
+
+When a user uploads a document, the system checks if they have previously uploaded the **same file** (by SHA-256 hash):
+
+| Scenario | Detection | System Response | User Experience |
+|----------|-----------|----------------|------------------|
+| **Exact duplicate** | Same SHA-256 hash, same user | Skip processing, return existing doc | "Already processed, ready to use" |
+| **Same filename, different content** | Different SHA-256 hash | Process as new version | Treated as new document |
+| **Same file, different user** | Hash matches but different user_id | Process independently | Each user gets their own copy |
+| **Re-uploading during processing** | Hash matches, status=PROCESSING | Return current status | "Still processing, please wait" |
+
+### Version Update Flow
+
+When user uploads an **updated version** of an existing document:
+
+```
+User uploads "my_tax_return_v2.pdf" (same name, different hash)
+
+Step 1: Check hash → Different from existing
+Step 2: Create new document_id (doc-user-123-v2-001)
+Step 3: Generate new presigned URL
+Step 4: Upload to S3 (new file, same bucket)
+Step 5: Process with full refresh:
+  - Delete old vectors from OpenSearch (document_id=doc-user-123-001)
+  - Extract, chunk, embed new version
+  - Index to OpenSearch with new document_id
+Step 6: Update metadata (version increment)
+Step 7: S3 versioning keeps both versions
+```
+
+**Key Points**:
+- **SHA-256 hash calculated client-side** before upload (optional but recommended)
+- **Hash can be calculated server-side** after upload (fallback)
+- **Same file = same hash**: Skip processing, return existing
+- **Different file = different hash**: Process as new/updated version
+- **Old version preserved**: S3 versioning keeps history
 
 ```json
 {
