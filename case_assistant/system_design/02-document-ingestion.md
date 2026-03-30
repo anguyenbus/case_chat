@@ -258,8 +258,7 @@ graph TB
     end
 
     A --> B
-    B --> C
-    C --> D
+    B --> D
     D --> E
     E -->|Yes| I
     E -->|No| F
@@ -288,6 +287,126 @@ graph TB
     style Q fill:#4CAF50
     style R fill:#4CAF50
 ```
+
+### 2.1.1 Step-by-Step Pipeline Walkthrough
+
+#### Step 1: Trigger & Coordination
+
+**1.1 K8s CronJob Initiates Sync**
+- Scheduled for `0 2 1 * *` (2:00 AM UTC on the 1st of each month)
+- `concurrencyPolicy: Forbid` ensures only one sync job runs at a time
+- If previous job is still running (unlikely, but possible with large datasets), K8s skips the trigger
+
+**1.2 Source List Validation**
+- Job fetches `source-list/current.json` from S3 config bucket
+- Validates schema, URL reachability, and checks for duplicate source IDs
+- If validation fails, job aborts before any processing begins
+- This prevents corrupt configurations from triggering bad syncs
+
+---
+
+#### Step 2: Document Fetch
+
+**2.1 Fetch from ATO Sources**
+- For each source in the validated list, initiate HTTPS fetch
+- Timeout set to 300 seconds (5 minutes) per source
+- Sources are fetched in parallel to reduce total sync time
+
+**2.2 Source Availability Check**
+- **If source is available:** Proceed to storage step
+- **If source fails:**
+  - First retry: Try primary URL again
+  - Second retry: Try fallback URL if configured
+  - Third retry: Exponential backoff, then decide based on priority
+
+**2.3 Priority-Based Decision**
+- **Critical sources (ITAA 1997, Tax Rulings):** Failure aborts entire sync, pages on-call
+- **High/Normal sources:** Skip with warning, continue with other sources
+- **Low sources:** Skip silently, log only
+
+---
+
+#### Step 3: Storage & Validation
+
+**3.1 Store in S3 Raw Bucket**
+- Upload to `s3://case-assistant-raw/static/YYYY-MM-DD/source-id.pdf`
+- Calculate SHA-256 hash of the entire document
+- S3 versioning automatically creates a new version if file already exists
+
+**3.2 Change Detection**
+- Compare new SHA-256 hash with previously stored hash (from OpenSearch metadata)
+- **If hash matches:** Document unchanged, skip full processing, just update metadata timestamp
+- **If hash differs:** Document changed (or new), proceed to extraction
+
+**Why Skip Unchanged Documents?**
+- Monthly sync means most legislation hasn't changed
+- Skipping unchanged documents saves ~60-80% of processing time
+- Reduces embedding costs (Bedrock Titan API calls)
+
+---
+
+#### Step 4: Extraction & Processing
+
+**4.1 Page Extraction**
+- Extract pages from PDF using format-specific parser
+- For each page, detect document structure (headers, footers, page numbers)
+
+**4.2 Table Detection (Two-Stage)**
+- **Stage 1 - Fast Heuristics (no API calls):**
+  - Count vector lines in PDF
+  - Analyze text density and spatial variance
+  - Detect column patterns
+  - Score: 0-7 points, threshold ≥4 marks as "candidate"
+- **Stage 2 - Textract Confirmation:**
+  - Only candidate pages sent to Textract
+  - Textract `AnalyzeDocument` with `FeatureTypes: ['TABLES']`
+  - If table found → VLM extraction path
+  - If no table → standard text parser path
+
+**4.3 Content Extraction**
+- **Text pages:** PyMuPDF extracts text, preserves structure
+- **Table pages:** VLM (Bedrock Multimodal) extracts table as JSON + markdown
+
+---
+
+#### Step 5: Indexing
+
+**5.1 Chunking**
+- **Structural boundaries first:** Split by sections, divisions, provisions
+- **Large sections (>1200 tokens):** Semantic refinement using sentence embeddings
+- **Result:** Chunks 800-1200 tokens with 12-15% overlap
+
+**5.2 Embedding Generation**
+- Send chunks to Bedrock Titan v2 for embedding generation
+- Batch size: 100 chunks per API call (optimizes cost and throughput)
+- Store 1536-dimensional vectors
+
+**5.3 Citation Extraction**
+- Detect legal citations using regex patterns
+- Normalize to canonical form (e.g., "s 288-95" → "s-288-95")
+- Generate aliases for matching variations
+- Extract cross-references to related provisions
+
+---
+
+#### Step 6: Completion
+
+**6.1 OpenSearch Bulk Index**
+- Write chunks to `unified-legal-index` (vector + metadata)
+- Write citations to `citation-index` (exact match lookup)
+- Update document metadata in `document-metadata` index
+- Bulk write for performance (typically 500-1000 chunks per bulk request)
+
+**6.2 SNS Notification**
+- Publish completion message to SNS topic
+- Message includes: document count, success/failure summary, processing duration
+- Subscribers (monitoring, dashboards) receive update
+
+**6.3 Cleanup**
+- Update sync status in OpenSearch
+- Log final metrics to CloudWatch
+
+---
 
 ### 2.2 Source List Management
 
