@@ -505,12 +505,17 @@ graph TB
         T1[Table on Page N]
         T2[First Table on Page N+1]
 
-        CHECK{Continuation<br/>Indicators}
+        CHECK{Check Continuation<br/>Indicators}
 
-        IND1[Column Count Match]
-        IND2[Column Width Similar<br/>> 90%]
-        IND3[No Bottom Border<br/>on Page N]
-        IND4[No Header on<br/>Page N+1]
+        IND1[Indicator 1:<br/>Column Count Match?]
+        IND2[Indicator 2:<br/>Column Width Similar<br/>> 90%?]
+        IND3[Indicator 3:<br/>No Bottom Border<br/>on Page N?]
+        IND4[Indicator 4:<br/>No Header on<br/>Page N+1?]
+    end
+
+    subgraph "Decision Logic"
+        COUNT{Count True<br/>Indicators}
+        DECISION{2 or More<br/>Indicators True?}
     end
 
     subgraph "Decision"
@@ -531,18 +536,21 @@ graph TB
     CHECK --> IND3
     CHECK --> IND4
 
-    IND1 --> CONTINUE
-    IND2 --> CONTINUE
-    IND3 --> CONTINUE
-    IND4 --> CONTINUE
+    IND1 --> COUNT
+    IND2 --> COUNT
+    IND3 --> COUNT
+    IND4 --> COUNT
 
-    CHECK -.2+ indicators.-> SEPARATE
+    COUNT --> DECISION
+    DECISION -->|Yes| CONTINUE
+    DECISION -->|No| SEPARATE
 
     CONTINUE --> GROUP
     GROUP --> MERGE
     MERGE --> METADATA
 
     style CHECK fill:#FF9800
+    style DECISION fill:#FF9800
     style CONTINUE fill:#4CAF50
     style SEPARATE fill:#2196F3
 ```
