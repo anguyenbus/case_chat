@@ -89,8 +89,7 @@ graph TB
 graph TB
     subgraph "Trigger & Coordination"
         A[K8s CronJob<br/>Schedule: 0 2 1 * *<br/>ConcurrencyPolicy: Forbid]
-        B[Redis Distributed Lock<br/>TTL: 7200 seconds<br/>Auto-release on completion]
-        C[Source List Validator<br/>S3: case-assistant-config<br/>Stage: Validate → Promote]
+        B[Source List Validator<br/>S3: case-assistant-config<br/>Stage: Validate → Promote]
     end
 
     subgraph "Document Fetch"
