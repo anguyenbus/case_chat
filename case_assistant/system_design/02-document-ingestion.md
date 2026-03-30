@@ -17,12 +17,13 @@ graph TB
     end
 
     subgraph "Ingestion Control"
-        CRON[K8s CronJob<br/>Concurrency: Forbid<br/>Distributed Lock: Redis]
+        CRON[K8s CronJob<br/>Concurrency: Forbid]
         PRE[Presigned URL Generator<br/>1-Hour Expiry<br/>Duplicate Detection]
     end
 
     subgraph "Storage Layer"
-        RAW_S3[S3 Raw Bucket<br/>Versioning Enabled<br/>90-Day Retention]
+        STATIC_S3[S3: Static KB Raw<br/>Versioning: Enabled<br/>Retention: 30 days]
+        USER_S3[S3: User Uploads<br/>Versioning: Enabled<br/>Retention: 90 days]
         CONFIG_S3[S3 Config Bucket<br/>Source Lists<br/>Validation Staging]
     end
 
@@ -52,10 +53,11 @@ graph TB
 
     STATIC --> CRON
     USER --> PRE
-    CRON --> RAW_S3
-    PRE --> RAW_S3
+    CRON --> STATIC_S3
+    PRE --> USER_S3
     CONFIG_S3 -.Validation.-> CRON
-    RAW_S3 --> DETECT
+    STATIC_S3 --> DETECT
+    USER_S3 --> DETECT
     DETECT --> TABLE_SCAN
     TABLE_SCAN -->|Text Page| TEXTRACT
     TABLE_SCAN -->|Table Detected| VLM
@@ -78,6 +80,138 @@ graph TB
     style CITATION fill:#4CAF50
     style UNIFIED fill:#4CAF50
 ```
+
+### 1.1 Design Discussion: S3 Raw Storage Strategy
+
+---
+
+## Why Separate S3 Raw Buckets with Different Retention?
+
+The Static KB and User Upload knowledge bases have fundamentally different characteristics, requiring different retention strategies:
+
+| Characteristic | Static KB | User Uploads |
+|----------------|-----------|--------------|
+| **Source of Truth** | ATO legislation.gov.au (public, permanent) | User's device (private, may be deleted) |
+| **Re-fetchable** | ✅ Yes - always available from source | ❌ No - user's only copy |
+| **Change Pattern** | Predictable monthly amendments | Unpredictable user corrections |
+| **Business Impact of Loss** | Low - can re-download from ATO | High - user data cannot be recovered |
+| **Raw Storage Value** | Temporary buffer for processing | Critical for debugging and re-processing |
+
+---
+
+## Static KB: 30-Day Retention
+
+```mermaid
+graph LR
+    subgraph "Static KB Storage"
+        ATO[ATO Source<br/>legislation.gov.au<br/>Permanent, Public]
+        RAW[S3 Raw<br/>30 days<br/>Quick rollback]
+        INDEX[OpenSearch<br/>Indefinite<br/>Searchable chunks]
+    end
+
+    ATO -->|Monthly sync| RAW
+    RAW -->|Ingestion| INDEX
+    ATO -.Always re-fetchable.->
+    style ATO fill:#4CAF50
+    style RAW fill:#FF9800
+    style INDEX fill:#2196F3
+```
+
+**Why 30 Days is Sufficient for Static KB:**
+
+| Consideration | Justification |
+|---------------|---------------|
+| **Source availability** | ATO legislation is permanently available online. If deleted from S3, simply re-fetch from source. |
+| **Corruption detection window** | Ingestion issues are typically discovered within 1-2 sync cycles (30-60 days). 30 days provides one full cycle buffer. |
+| **Cost optimization** | Static KB is large (1,000-10,000 documents). Shorter retention = significant cost savings (~70% vs 90-day). |
+| **Sync frequency** | Monthly sync means each document is refreshed regularly. Old versions have limited value. |
+| **Version tracking in index** | OpenSearch citation index tracks document versions. The "truth" is in the index, not raw S3. |
+
+**What 30 Days Protects Against:**
+- Sync job completes but chunks are corrupted → detect within 30 days, re-fetch and re-process
+- Legislation amendment has issues → rollback to previous version for investigation
+- Ingestion pipeline bug → quick fix and re-process with same raw files
+
+**What 30 Days Does NOT Protect Against (Acceptable Trade-off):**
+- Issues discovered after 60+ days → re-fetch from ATO source (always available)
+- Historical analysis of raw document changes → not a requirement for public legislation
+
+---
+
+## User Uploads: 90-Day Retention
+
+```mermaid
+graph LR
+    subgraph "User Upload Storage"
+        USER[User Device<br/>Private, Temporary]
+        RAW[S3 Raw<br/>90 days<br/>Cannot re-fetch]
+        INDEX[OpenSearch<br/>Until user deletion<br/>or 30-day policy]
+    end
+
+    USER -->|One-time upload| RAW
+    RAW -->|Ingestion| INDEX
+    USER -.If deleted, gone forever.->
+    style USER fill:#F44336
+    style RAW fill:#FF9800
+    style INDEX fill:#2196F3
+```
+
+**Why 90 Days is Necessary for User Uploads:**
+
+| Consideration | Justification |
+|---------------|---------------|
+| **Cannot re-fetch** | User may delete local file, lose device, or no longer have access. S3 raw copy is the only backup. |
+| **Delayed bug reports** | Users may report processing issues weeks after upload ("my tax return from 2 months ago has wrong chunks"). |
+| **Compliance requirements** | Financial document processing systems typically require 60-90 day raw data retention for audit purposes. |
+| **Re-processing needs** | If chunking/embedding strategy improves, need raw documents to re-process historical uploads. |
+| **Investigation window** | Complex ingestion issues (table extraction, OCR quality) may require weeks to diagnose and fix. |
+
+**What 90 Days Protects Against:**
+- User reports issue 45 days after upload → raw file still available for root cause analysis
+- Chunking strategy improvement → can re-process user documents with better extraction
+- OCR quality issues → can re-run with improved table detection
+- Compliance audit → can demonstrate raw document processing pipeline
+
+---
+
+## Cost Comparison
+
+| Knowledge Base | Est. Monthly Docs | Avg Doc Size | 30-Day Cost | 90-Day Cost | Savings |
+|----------------|-------------------|--------------|-------------|-------------|---------|
+| **Static KB** | 5,000 | 2 MB | ~$20/month | ~$60/month | **67%** |
+| **User Uploads** | 1,000 | 5 MB | ~$25/month | ~$75/month | Acceptable for protection |
+
+**Total annual savings with dual strategy: ~$480/year**
+
+---
+
+## Lifecycle Policy Configuration
+
+```yaml
+# Static KB Lifecycle
+StaticKB_Raw:
+  - Transition to Glacier: 30 days
+  - Delete: 90 days
+
+# User Uploads Lifecycle
+UserUploads_Raw:
+  - Transition to Glacier: 90 days
+  - Delete: 365 days
+```
+
+---
+
+## Summary: Dual Retention Rationale
+
+| Aspect | Static KB (30 days) | User Uploads (90 days) |
+|--------|---------------------|------------------------|
+| **Primary driver** | Cost optimization | Data protection |
+| **Re-fetchable** | Yes, from ATO | No, user's only copy |
+| **Failure impact** | Low (re-download) | High (permanent loss) |
+| **Corruption window** | 1 sync cycle | 3 sync cycles |
+| **Compliance need** | Public data = lower | Private = higher |
+
+**Key Insight:** Static KB raw storage is a *temporary buffer* for processing. User uploads raw storage is *critical backup* that cannot be replaced.
 
 ---
 
