@@ -1055,6 +1055,160 @@ The current design uses OpenSearch for storing document metadata and status. An 
 
 ---
 
+## 3.5 Design Discussion: Deduplication Strategy
+
+### The Scenario
+
+A user uploads the same document multiple times with different filenames or minor modifications:
+
+```
+Upload 1: "tax-return-2024.pdf"          → Processed, indexed
+Upload 2: "tax-return-final.pdf"         → Same content, different name
+Upload 3: "tax-return-2024-v2.pdf"        → Same content + minor change, different name
+Upload 4: "tax-return-2024.pdf" (edited)  → Original name + minor change
+```
+
+The system must detect **exact duplicates** (same content, any filename) but must **NOT deduplicate modified versions**.
+
+### Deduplication Requirements
+
+| Scenario | Content | Filename | Action |
+|----------|---------|----------|--------|
+| **Same doc, different name** | Identical | Different | Skip: Return existing document |
+| **Same doc, minor change, same name** | Different (1+ byte) | Same | Process as new version |
+| **Same doc, different name, minor change** | Different (1+ byte) | Different | Process as new version |
+| **Different users, same doc** | Identical or different | Any | Process independently (per-user isolation) |
+
+**Key principle:** Each user has a dynamic, project-based knowledge base. Deduplication prevents redundant processing of identical files for the same user, but ensures that any content change triggers re-processing.
+
+**Cross-user deduplication is intentionally NOT performed.** If User A and User B both upload the same legislation PDF, each gets their own processed chunks. This is required for:
+- User isolation (privacy)
+- Independent deletion (user data removal)
+- Usage tracking per user
+
+### Technical Approach
+
+The deduplication strategy relies on two content attributes:
+
+| Attribute | Purpose | Calculation |
+|-----------|---------|-------------|
+| **SHA-256 hash** | Content fingerprint | Computed over entire file after upload |
+| **File size** | Fast pre-filter | From upload initiation request |
+
+**Deduplication check:**
+1. After upload, server computes SHA-256 hash of the file
+2. Query OpenSearch for `user_id + server_hash` combination
+3. If match found: skip processing, return existing document
+4. If no match: process as new document
+
+**Filename is stored for display only. It is not used for deduplication.**
+
+### Critical Assessment
+
+#### Advantages of Hash-Based Deduplication
+
+| Advantage | Explanation |
+|-----------|-------------|
+| **Content-based** | Independent of filename, metadata, or wrapper |
+| **Reliable** | SHA-256 collision probability: ~1 in 10^77 (practically impossible) |
+| **Fast lookup** | Hash as key enables O(1) lookup in OpenSearch |
+| **Storage-efficient** | One hash value (32 bytes) vs storing full content comparison |
+| **Privacy-preserving** | Hash cannot reveal original content |
+
+#### Limitations and Edge Cases
+
+| Limitation | Impact | Mitigation |
+|------------|--------|------------|
+| **Byte-sensitive** | One byte change = completely different hash | No mitigation—intentional behavior for full refresh |
+| **Format conversions** | PDF → Word → PDF produces different hashes | Acceptable—different formats require different processing |
+| **No semantic detection** | "Inc Ltd" vs "Inc. Ltd." are different hashes | Not within scope—semantic deduplication is complex |
+| **Hash computation cost** | Large files (100MB) take time to hash | Compute hash server-side after S3 upload (parallelizable) |
+| **Pre-upload hash is optional** | Client-side hash is optimization only | Server-side hash is authoritative |
+
+#### File Size as Pre-Filter
+
+File size is checked before hash computation:
+
+```
+If file_size differs from existing record:
+    → Content differs (high confidence)
+    → Skip hash query, process as new
+If file_size matches existing record:
+    → Compute hash to confirm
+```
+
+This optimization avoids hash computation for obviously different files.
+
+### Why Not Alternative Approaches?
+
+| Alternative | Why Rejected |
+|-------------|--------------|
+| **Filename-based** | Users can and will rename files |
+| **Mod-Time based** | Re-saving PDF changes modification time |
+| **Partial hash (first N bytes)** | Could miss differences late in file |
+| **Perceptual hash** | Too complex, unreliable for binary documents |
+| **Metadata comparison** | Insufficient—same content can have different metadata |
+
+### The "Same File, Different User" Question
+
+```
+User A uploads "document.pdf" (hash: abc123)
+User B uploads "document.pdf" (hash: abc123)
+```
+
+These are treated as **separate documents** because deduplication query includes `user_id`:
+
+```json
+{
+  "query": {
+    "bool": {
+      "must": [
+        {"term": {"user_id": "user-a"}},  // Scope to user
+        {"term": {"server_hash": "abc123"}}
+      ]
+    }
+  }
+}
+```
+
+Each user has their own document namespace. This is required for privacy and isolation.
+
+### Failure Mode: Hash Collisions
+
+SHA-256 is designed to make collisions astronomically improbable. However, if a collision were to occur:
+
+| Scenario | Likelihood | Impact |
+|----------|-----------|--------|
+| **Two different files produce same hash** | ~1 in 10^77 | Wrong file marked as duplicate, not processed |
+| **Mitigation** | N/A at current scale | If collision suspected, bypass deduplication manually |
+
+For this system, the probability is negligible. No additional collision detection is warranted.
+
+### When Hash-Based Deduplication Fails
+
+The system does NOT detect duplicates in these cases:
+
+| Scenario | Why Not Detected |
+|----------|------------------|
+| **Minor edits** | One character change = different hash |
+| **Re-save with different software** | PDF writer adds metadata, changes hash |
+| **Format conversion** | PDF → Word → PDF changes binary content |
+| **Compressed vs uncompressed** | Different binary structure |
+
+This is acceptable behavior—the system treats these as distinct documents, which they are.
+
+### Recommendation
+
+Hash-based deduplication with file size pre-filter is the correct approach for this use case:
+
+1. **Simplicity**: One hash field, one query
+2. **Reliability**: SHA-256 is cryptographically secure
+3. **Performance**: Fast lookup, minimal storage overhead
+4. **Isolation**: Scoped per user, no cross-user leakage
+5. **Acceptable limitations**: Edge cases are intentional, not bugs
+
+---
+
 ## 4. Document Format Support
 
 ### 4.1 Supported Formats
