@@ -1,18 +1,44 @@
 # Data Retention and Governance - Open Questions and Technical Review
 
-**Document Version**: 1.0.0
+**Document Version**: 1.3.0
 **Date**: 2026-04-07
 **Author**: Principal AI Engineer
 **Status**: Technical Review
 **Reviews**: [14-data-retention-and-governance.md](./14-data-retention-and-governance.md)
 
+**Current Status**: Awaiting STEP 1 confirmation (Public-Facing vs ATO Internal). All other questions cannot be definitively answered until this scenario is confirmed.
+
 ---
 
-## Executive Summary
+## The Two Key Decisions
 
-This document captures open questions, technical concerns, and gaps identified during architectural review of the data retention and governance design. These questions require resolution before implementation proceeds.
+All questions in this document ultimately support two technical decisions:
 
-**Priority Legend**: 🔴 Blocker | 🟡 Significant | 🟢 Clarification Needed
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ DECISION 1: Session Persistence                                 │
+│                                                                 │
+│   Question: Do we need 7-year retention for conversation data? │
+│                                                                 │
+│   Public-Facing:  No  → Redis sessions, 90-day TTL, ~$500/year │
+│   ATO Internal:  Yes → Aurora PostgreSQL, soft-delete, ~$15K   │
+│                                                                 │
+│   Stakeholder: Records Management Team                          │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ DECISION 2: Fine-Grained Access Control                        │
+│                                                                 │
+│   Question: How strict must RBAC and data isolation be?        │
+│                                                                 │
+│   Public-Facing:  Basic  → App-level filtering, optional RLS   │
+│   ATO Internal:  Strict → PostgreSQL RLS, full audit trail     │
+│                                                                 │
+│   Stakeholder: Security Team                                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Both decisions depend on STEP 1**: Confirming whether this is public-facing or ATO internal use.
 
 ---
 
@@ -30,6 +56,30 @@ This document captures open questions, technical concerns, and gaps identified d
 ---
 
 ## 1. Compliance & Legal Questions
+
+### 🔴 1.0 Core Deployment Scenario - BLOCKING QUESTION
+
+**Question**: Is this system for public taxpayer-facing use OR ATO internal use?
+
+**Context**: The entire architecture hinges on this answer. These are fundamentally different scenarios with opposite requirements.
+
+| Scenario | Retention Required | Auto-Delete Acceptable | Records Authority Needed |
+|----------|-------------------|------------------------|--------------------------|
+| **Public Taxpayer-Facing** | None (user data only) | Yes | No |
+| **ATO Internal Use** | 7 years minimum | No | Yes |
+
+**Concerns**:
+- If we design for ATO internal but system is public-facing: Significant over-engineering and cost
+- If we design for public-facing but system is ATO internal: Non-compliant with Archives Act
+- Can a single deployment serve both scenarios with different retention policies?
+
+**Required Actions**:
+- [ ] **Confirm deployment scenario BEFORE any implementation**
+- [ ] If hybrid: Define how to differentiate user types for retention
+- [ ] Update architecture document with confirmed scenario
+- [ ] Obtain Records Management sign-off based on confirmed scenario
+
+---
 
 ### 🔴 1.1 Records Management Engagement Status
 
@@ -67,7 +117,35 @@ This document captures open questions, technical concerns, and gaps identified d
 - [ ] Clarify status of incorrect AI-generated content
 - [ ] Document legal basis in Architecture Decision Record
 
-### 🟡 1.3 FOI and Discovery Readiness
+### 🟡 1.3 Tiered Retention Based on Conversation Type
+
+**Question**: Should all conversations have 7-year retention, or should it vary by use case?
+
+**Context**: Not all ATO officer interactions with the system create Commonwealth records of equal value.
+
+| Conversation Type | Example | Proposed Retention | Rationale |
+|-------------------|---------|-------------------|-----------|
+| **Formal audit decision support** | "What penalties apply to case AUD-2024-12345?" | 7 years | Evidence of decision-making |
+| **Technical advice research** | "Explain s 288-95 for this taxpayer scenario" | 7 years | Part of advice record |
+| **Policy/legislation research** | "What does the latest TR say about FBT?" | 3 years | Administrative use |
+| **Educational/learning queries** | "How do I calculate the small business CGT discount?" | 1 year or 90 days | Training, not business record |
+| **Test/exploration queries** | User testing system features | 90 days | Not substantive business |
+
+**Concerns**:
+- Storing 7 years of "how do I..." queries creates unnecessary cost and privacy risk
+- Users may avoid the system if all queries are permanently retained
+- Distinguishing conversation types reliably is challenging
+- What if user starts with educational query, then pivots to formal advice?
+
+**Required Actions**:
+- [ ] Define conversation type classification criteria
+- [ ] Validate tiered retention with Records Management
+- [ ] Design UX to set conversation purpose (with privacy notice)
+- [ ] Document technical implementation for variable retention
+
+---
+
+### 🟡 1.4 FOI and Discovery Readiness
 
 **Question**: If an FOI request or legal discovery requires producing an ATO officer's conversation history, can we?
 
@@ -84,7 +162,7 @@ This document captures open questions, technical concerns, and gaps identified d
 - [ ] Define SLA for FOI/discovery response
 - [ ] Test export process with sample data
 
-### 🟡 1.4 Cross-Border Data Transfer
+### 🟡 1.5 Cross-Border Data Transfer
 
 **Question**: If Aurora PostgreSQL is in a specific AWS region, what happens if data needs to be accessed from overseas?
 
@@ -159,7 +237,38 @@ This document captures open questions, technical concerns, and gaps identified d
 - [ ] Implement lifecycle policies for query traces
 - [ ] Consider S3 + Athena for archived query traces
 
-### 🟡 2.4 Cross-Archival Search Strategy
+### 🟡 2.4 LLM Context Storage Optimization
+
+**Question**: Should we store full LLM context or just chunk pointers in query traces?
+
+**Context**: Section 1.4 of the governance document shows storing `llm_context_sent: "Full text of top 3 chunks..."`. At 5KB per query × 100K queries/day:
+- Full context: 500MB/day → 180GB/year → 1.26TB over 7 years
+- Chunk pointers only: ~50MB/day → 18GB/year → 126GB over 7 years
+
+**Concerns**:
+- Storing full chunk content duplicates OpenSearch (chunks already stored there)
+- Aurora storage cost is higher than OpenSearch/S3
+- Do we need the full context for audit, or just chunk IDs?
+- If chunks are updated, do we update all historical query traces?
+
+**Options**:
+| Approach | Storage | Reproducibility | Cost |
+|----------|---------|-----------------|------|
+| Store full context | High (1.26TB) | Perfect - reproduce LLM input | ~$1,530/year (Aurora) |
+| Store chunk IDs only | Low (126GB) | Good - fetch from OpenSearch | ~$150/year |
+| Store context hash | Minimal | Limited - verify, not reproduce | ~$15/year |
+
+**Recommendation**: Store chunk IDs + embedding versions. For audit reproduction, fetch current chunk content from OpenSearch (with version tracking).
+
+**Required Actions**:
+- [ ] Conduct cost-benefit analysis of context storage options
+- [ ] Define audit requirements: do we need exact LLM input or just retrievability?
+- [ ] Implement chunk version tracking in OpenSearch
+- [ ] Update query trace schema based on decision
+
+---
+
+### 🟡 2.5 Cross-Archival Search Strategy
 
 **Question**: How do users search their history when data is archived in Glacier?
 
@@ -236,7 +345,35 @@ This document captures open questions, technical concerns, and gaps identified d
 - [ ] Define minimum viable security controls
 - [ ] Make go/no-go decision
 
-### 🟢 3.4 Connection Pooling with Session Variables
+### 🟢 3.4 WebSocket and Real-Time Feature Requirements
+
+**Question**: Do we need real-time messaging features that would benefit from Redis pub/sub?
+
+**Context**: Section 1.5 of the governance document recommends PostgreSQL-only but notes Redis has better pub/sub for WebSocket.
+
+**Concerns**:
+- Will users collaborate on the same session in real-time?
+- Do we need streaming responses (typing indicator) or is request/response sufficient?
+- If we add real-time features later, what's the migration cost?
+- PostgreSQL NOTIFY/LISTEN may be sufficient for moderate usage
+
+**Real-Time Feature Examples**:
+| Feature | Need Pub/Sub? | PostgreSQL NOTIFY Sufficient? |
+|---------|---------------|------------------------------|
+| Streaming LLM responses | Optional | Yes, NOTIFY per token/chunk |
+| Multi-user collaboration | Yes | Maybe, depends on concurrency |
+| Typing indicators | Optional | Yes |
+| Session updates | Optional | Yes |
+
+**Required Actions**:
+- [ ] Define real-time feature requirements
+- [ ] Prototype PostgreSQL NOTIFY for streaming
+- [ ] Performance test NOTIFY vs Redis pub/sub
+- [ ] Document decision criteria for adding Redis
+
+---
+
+### 🟢 3.5 Connection Pooling with Session Variables
 
 **Question**: Does PgBouncer transaction pooling work with `SET app.user_id`?
 
@@ -465,15 +602,17 @@ This document captures open questions, technical concerns, and gaps identified d
 
 **Question: Are we storing more data than necessary for audit requirements?
 
+**Note**: Overlaps with question 2.4 (LLM Context Storage Optimization).
+
 **Concerns**:
-- Full LLM context in query traces - is all of it needed?
-- Can we store metadata only instead of full context?
+- Full LLM context in query traces - is all of it needed? (Covered in 2.4)
+- Retrieved context stored vs chunk pointers only
 - What's the minimal data needed for audit trail?
 - Are there privacy implications of storing full context?
 
 **Required Actions**:
-- [ ] Review data retention requirements
-- [ ] Identify minimization opportunities
+- [ ] Review data retention requirements for each field
+- [ ] Identify minimization opportunities beyond LLM context
 - [ ] Define minimal viable audit trail
 - [ ] Conduct privacy impact assessment
 
@@ -529,20 +668,31 @@ This document captures open questions, technical concerns, and gaps identified d
 
 ## 8. Strategic Questions
 
-### 🔴 8.1 7-Year Retention Justification
+### 🔴 8.1 General Disposal Schedule (GDS) Mapping
 
-**Question: Why 7 years specifically? Is this based on actual Records Authority guidance?
+**Question: What specific GDS items apply to each data type in this system?
+
+**Note**: 7-year retention is a common default for administrative records, but the actual GDS must be referenced.
 
 **Concerns**:
-- Different record types have different retention periods
-- Some might need 5 years, others 15 years
-- Are we over-retaining some data and under-retaining others?
+- Different record types map to different GDS items with varying retention
+- Some ATO functions have 15-year retention (e.g., complex objections)
+- Educational queries may have different retention than formal advice
+- Are we using a blanket 7-year policy instead of proper GDS mapping?
+
+**GDS Examples** (to be validated):
+| Data Type | Potential GDS Item | Retention | Notes |
+|-----------|-------------------|-----------|-------|
+| Audit working papers | GDS item for audit records | 7 years | Confirm specific item |
+| Technical advice files | GDS item for advice | 7-15 years | Varies by complexity |
+| Policy research | GDS item for administrative use | 3-7 years | Confirm |
+| System logs | GDS item for transaction logs | 1-7 years | Varies by log type |
 
 **Required Actions**:
-- [ ] Document specific retention period for each data type
-- [ ] Map to General Disposal Schedule items
-- [ ] Validate with Records Management team
-- [ ] Consider tiered retention strategy
+- [ ] Consult Records Management for GDS mapping
+- [ ] Document specific GDS item for each data type
+- [ ] Consider tiered retention based on GDS items
+- [ ] Create GDS-to-table mapping document
 
 ### 🟡 8.2 Soft-Delete vs Hard-Delete Rationale
 
@@ -598,26 +748,76 @@ This document captures open questions, technical concerns, and gaps identified d
 
 | # | Question | Category | Priority | Owner |
 |---|----------|----------|----------|-------|
-| 1 | Has Records Management been engaged? | Compliance | 🔴 Blocker | Product/Engineering |
-| 2 | Can Aurora handle 50K session queries/sec? | Architecture | 🔴 Blocker | Engineering |
-| 3 | How do we prevent LLM data leakage? | Security | 🔴 Blocker | Security/Engineering |
-| 4 | What's the legal basis for AI conversations as records? | Legal | 🔴 Blocker | Legal/Product |
-| 5 | How do we migrate from Redis to PostgreSQL? | Migration | 🔴 Blocker | Engineering |
-| 6 | What's the cost if we need legal holds beyond 7 years? | Cost | 🟡 Significant | Product/Finance |
-| 7 | Have we load-tested RLS at production scale? | Security | 🟡 Significant | Engineering |
-| 8 | What's the rollback plan if RLS causes issues? | Operations | 🟡 Significant | Engineering/SRE |
-| 9 | How do we integrate with ATO authentication? | Integration | 🟡 Significant | Engineering/Security |
-| 10 | What's our testing strategy for security features? | Testing | 🟡 Significant | QA/Engineering |
+| 1 | **Is this public-facing OR ATO internal use?** (1.0) | Compliance | 🔴 Blocker | **Product/Stakeholders** |
+| 2 | Has Records Management been engaged? | Compliance | 🔴 Blocker | Product/Engineering |
+| 3 | What's the legal basis for AI conversations as records? | Legal | 🔴 Blocker | Legal/Product |
+| 4 | Can Aurora handle 50K session queries/sec? | Architecture | 🔴 Blocker | Engineering |
+| 5 | How do we prevent LLM data leakage? | Security | 🔴 Blocker | Security/Engineering |
+| 6 | How do we migrate from Redis to PostgreSQL? | Migration | 🔴 Blocker | Engineering |
+| 7 | What's the cost if we need legal holds beyond 7 years? | Cost | 🟡 Significant | Product/Finance |
+| 8 | Have we load-tested RLS at production scale? | Security | 🟡 Significant | Engineering |
+| 9 | What's the rollback plan if RLS causes issues? | Operations | 🟡 Significant | Engineering/SRE |
+| 10 | How do we integrate with ATO authentication? | Integration | 🟡 Significant | Engineering/Security |
+| 11 | Should we use tiered retention by conversation type? | Compliance | 🟡 Significant | Product/Legal |
+| 12 | What's our LLM context storage strategy? | Architecture | 🟡 Significant | Engineering |
+| 13 | What's our testing strategy for security features? | Testing | 🟡 Significant | QA/Engineering |
 
 ---
 
 ## Next Steps
 
-1. **Schedule architecture review meeting** with stakeholders from Engineering, Security, Legal, and Product
-2. **Prioritize questions** based on risk and impact
-3. **Assign owners** to each question
-4. **Create action items** with deadlines
-5. **Follow-up review** after questions are answered
+Follow the 5-step decision flow defined in the parent document:
+
+### STEP 1: Confirm Scenario (This Week) ⏳ BLOCKING
+
+**Action**: Schedule meeting with Product stakeholders to answer:
+- Is this system for public taxpayer-facing use OR ATO internal use?
+- Can a single deployment serve both scenarios with different policies?
+
+**Outcome**: Determines which architecture path to follow (Simple vs Compliant)
+
+---
+
+### STEP 2: Records Management Engagement (If ATO Internal)
+
+**If ATO Internal Use confirmed**:
+- Engage Records Management team
+- Present data classification framework
+- Obtain guidance on: Are AI conversations Commonwealth records?
+- Confirm applicable GDS items for each data type
+- Validate tiered retention proposal
+
+**Outcome**: Determines Decision 1 (Session Persistence requirements)
+
+---
+
+### STEP 3: Security Team Engagement (If ATO Internal)
+
+**If ATO Internal Use confirmed**:
+- Engage Security team
+- Confirm PostgreSQL RLS requirement
+- Define audit trail requirements
+- Specify workspace/team access needs
+- Define user offboarding procedures
+
+**Outcome**: Determines Decision 2 (Access Control requirements)
+
+---
+
+### STEP 4: Architecture Finalization
+
+Once STEPS 1-3 complete:
+- Update this document with confirmed decisions
+- Design architecture based on requirements
+- Submit Records Authority if needed
+- Create implementation roadmap
+
+---
+
+### STEP 5: Implementation
+
+- **Public-Facing**: Simple architecture, lower cost, faster delivery
+- **ATO Internal**: Compliant architecture, Records Authority, longer timeline
 
 ---
 

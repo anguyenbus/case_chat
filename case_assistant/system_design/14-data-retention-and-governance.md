@@ -1,20 +1,41 @@
 # Data Retention, Governance, and Access Control
 
-**Document Version**: 1.1.0
+**Document Version**: 1.5.0
 **Date**: 2026-04-07
 **Author**: Principal AI Engineer
 **Status**: Design Discussion
 **Type**: Architecture Decision Record
+**Related Documents**: [14a-questions-and-gaps.md](./14a-questions-and-gaps.md) - Detailed open questions and technical review
+
+**Current Status**: Awaiting STEP 1 confirmation (Public-Facing vs ATO Internal). See "The Two Key Decisions" section below.
+
+**Acknowledgments**: Sections 3.6-3.8 incorporate patterns from the AI Coach reference architecture (end-to-end encryption, DLQ alerting, LangFuse observability).
 
 ---
 
 ## Executive Summary
 
-This document explores data classification, retention policies, and access controls for the Case Assistant system. The current design prioritizes temporary, ephemeral sessions with automatic data deletion—a design appropriate for public taxpayer-facing applications but potentially misaligned with ATO internal data governance requirements.
+This document explores data classification, retention policies, and access controls for the Case Assistant system. The architecture fundamentally depends on one **blocking question**:
 
-**Open Question**: What are the actual data governance requirements for this system?
+> **Is this system for public taxpayer-facing use OR ATO internal use?**
 
-Two scenarios require different approaches:
+These scenarios have opposite requirements:
+
+| Scenario | Retention Required | Auto-Delete Acceptable | Records Authority Needed | Architecture Approach |
+|----------|-------------------|------------------------|--------------------------|----------------------|
+| **Public Taxpayer-Facing** | None (user data only) | Yes | No | Ephemeral sessions, 90-day user data TTL |
+| **ATO Internal Use** | 7 years minimum | No | Yes | Persistent records, soft-delete, archival |
+
+**Current Design Gap**: The document assumes ATO internal use with 7-year retention. If the system is actually public-facing, significant simplification is possible. If ATO internal, Records Management engagement is required before implementation.
+
+**Key Recommendations for ATO Internal Use**:
+1. **Dual-layer architecture**: Temporary document storage (7-day TTL) + persistent conversation history (7-year retention)
+2. **PostgreSQL-first**: Use Aurora PostgreSQL for sessions instead of Redis (simpler, compliant, durable)
+3. **Soft-delete pattern**: User deletion marks data as deleted, but data retained for 7 years
+4. **Row-Level Security**: Database-level access control using PostgreSQL RLS
+5. **Tiered retention consideration**: Different conversation types may warrant different retention periods
+
+**Action Required**: Engage with ATO Records Management team to confirm actual requirements before implementing this architecture.
 
 | Scenario | Current Design Fit | Required Changes (if applicable) |
 |----------|-------------------|-------------------------------|
@@ -28,6 +49,108 @@ Two scenarios require different approaches:
 2. **Records layer**: Persistent conversation and query history (7-year minimum retention) with soft-delete
 
 **Action Required**: Engage with ATO Records Management team to confirm actual requirements before implementing this architecture.
+
+---
+
+## The Two Key Decisions
+
+This document ultimately addresses two technical decisions that **depend entirely on the deployment scenario**:
+
+```mermaid
+graph TB
+    START[Confirm Deployment Scenario] --> DECISION{Public-Facing or ATO Internal?}
+
+    DECISION -->|Public Taxpayer-Facing| PUBLIC[Decision 1: No 7-year retention<br/>Decision 2: Basic RBAC]
+    DECISION -->|ATO Internal Use| INTERNAL[Decision 1: 7-year retention required<br/>Decision 2: Defense-in-depth RBAC]
+
+    PUBLIC --> SIMPLE[Simple Architecture:<br/>• Redis sessions<br/>• 90-day user data TTL<br/>• Application-level filtering]
+    INTERNAL --> COMPLEX[Compliant Architecture:<br/>• Aurora PostgreSQL<br/>• Soft-delete + archival<br/>• PostgreSQL RLS + audit]
+
+    style DECISION fill:#FFF3E0
+    style PUBLIC fill:#E8F5E9
+    style INTERNAL fill:#FFEBEE
+```
+
+### Decision 1: Session Persistence (7-year retention?)
+
+| Question | Public-Facing Answer | ATO Internal Answer |
+|----------|---------------------|---------------------|
+| Are conversations Commonwealth records? | No | **Yes - must confirm** |
+| What retention period applies? | User-controlled (90-day default) | **7 years minimum** |
+| Where do we store chat history? | Optional, Redis | **Aurora PostgreSQL required** |
+| Can we auto-delete? | Yes | **No - soft-delete only** |
+| Cost impact | ~$500/year | **~$15,000/year** |
+
+**Stakeholder**: Records Management Team
+
+---
+
+### Decision 2: Fine-Grained Access Control (how strict?)
+
+| Question | Public-Facing Answer | ATO Internal Answer |
+|----------|---------------------|---------------------|
+| Is PostgreSQL RLS required? | Optional (app filtering OK) | **Yes - defense in depth** |
+| Do we need audit logging? | Basic access logs | **Full audit trail required** |
+| Team/workspace access needed? | Optional | **Yes - for collaboration** |
+| Data isolation level | User-scoped | **User + workspace + audit** |
+| What happens on user offboard? | Simple delete | **Legal hold may apply** |
+
+**Stakeholder**: Security Team
+
+---
+
+## Decision Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 1: Confirm Scenario (Product/Stakeholders)                 │
+│                                                                 │
+│   Is this system for:                                           │
+│   [ ] Public Taxpayer-Facing  ────────► Skip to STEP 5         │
+│   [ ] ATO Internal Use         ────────► Continue to STEP 2    │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 2: Records Management Engagement                           │
+│                                                                 │
+│   • Are AI conversations Commonwealth records?                  │
+│   • What GDS items apply?                                       │
+│   • Is tiered retention acceptable?                             │
+│                                                                 │
+│   Answer determines Decision 1 (Session Persistence)            │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 3: Security Team Engagement                                │
+│                                                                 │
+│   • Is PostgreSQL RLS required?                                 │
+│   • What audit trail is needed?                                 │
+│   • Workspace/team access requirements?                         │
+│                                                                 │
+│   Answer determines Decision 2 (Access Control)                 │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 4: Architecture Finalization                               │
+│                                                                 │
+│   • Design based on confirmed requirements                      │
+│   • Update this document with decisions                         │
+│   • Submit Records Authority if needed                          │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 5: Implementation                                          │
+│                                                                 │
+│   Public-Facing:  Simple architecture, lower cost              │
+│   ATO Internal:  Compliant architecture, Records Authority      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Current Status**: Awaiting STEP 1 confirmation from Product stakeholders.
 
 ---
 
@@ -199,6 +322,55 @@ graph TB
 **Storage location**: Aurora PostgreSQL `query_traces` table
 **Retention**: 7 years minimum
 **Access**: Restricted to records officer and data subject (ATO officer)
+
+#### Storage Optimization: Chunk Pointers vs Full Context
+
+**Question**: Should we store the full LLM context (chunk text) or just chunk IDs?
+
+**Current Design**: `"context_sent": "Full text of top 3 chunks..."` stores complete chunk text.
+
+**Cost Analysis** (100K queries/day, average 5KB context):
+
+| Approach | Daily | Annual | 7-Year | Aurora Cost |
+|----------|-------|--------|--------|-------------|
+| Full context | 500MB | 180GB | 1.26TB | ~$1,530/year |
+| Chunk IDs only | 5MB | 1.8GB | 12.6GB | ~$15/year |
+| Chunk IDs + versioning | 10MB | 3.6GB | 25.2GB | ~$30/year |
+
+**Optimization Proposal**: Store chunk IDs + version hash instead of full text. For audit reproduction:
+1. Retrieve chunk IDs from query trace
+2. Fetch current chunk content from OpenSearch
+3. Compare version hash to detect changes
+4. If version changed, flag for review
+
+**Updated Schema**:
+```sql
+CREATE TABLE query_traces (
+    query_trace_id UUID PRIMARY KEY,
+    -- ... existing fields ...
+
+    -- Instead of: llm_context_sent TEXT
+    context_chunk_ids JSONB,          -- ["chunk-001", "chunk-002", "chunk-003"]
+    context_chunk_versions JSONB,     -- {"chunk-001": "v1", "chunk-002": "v1"}
+    context_hash BYTEA,               -- SHA-256 of concatenated chunks (for integrity)
+
+    -- Full response is still stored
+    llm_response_full TEXT NOT NULL
+);
+```
+
+**Benefits**:
+- 99% storage cost reduction
+- No duplication (chunks already in OpenSearch)
+- Reproducible with version tracking
+- Can detect if source chunks changed (important for audits)
+
+**Trade-offs**:
+- Cannot reproduce EXACT LLM input if chunks are deleted/updated
+- Requires OpenSearch to remain online for audit reproduction
+- Version tracking adds complexity
+
+**Recommendation**: Store chunk IDs + version hash. Store full LLM response but not full retrieved context.
 
 ### 1.5 Session State Storage - PostgreSQL vs Redis
 
@@ -394,6 +566,38 @@ graph TB
 - If pub/sub messaging volume exceeds PostgreSQL NOTIFY capabilities
 - If advanced memory structures (sorted sets, hyperloglog) are needed
 - **Decision**: Add Redis only when metrics show actual need, not preemptively
+
+#### Real-Time Features and WebSocket Considerations
+
+**Question**: Do we need Redis pub/sub for real-time messaging features?
+
+**Potential Real-Time Features**:
+| Feature | User Value | Pub/Sub Needed | PostgreSQL NOTIFY Sufficient |
+|---------|------------|----------------|------------------------------|
+| Streaming LLM responses | See answers generate | Optional | Yes - NOTIFY per token/chunk |
+| Multi-user collaboration | Edit same session | Yes | Maybe - depends on concurrency |
+| Typing indicators | See user activity | Optional | Yes |
+| Live session updates | Real-time sync | Optional | Yes |
+
+**Analysis**:
+- PostgreSQL NOTIFY/LISTEN supports pub/sub messaging
+- For moderate usage (<1000 concurrent connections), NOTIFY is sufficient
+- NOTIFY overhead: ~1-2ms per message vs <1ms for Redis
+- NOTIFY is simpler (no additional service)
+
+**Recommendation**: Start with PostgreSQL NOTIFY for any real-time features. Add Redis only if:
+- Concurrent connections exceed 10,000
+- Message rate exceeds 10,000 messages/second
+- Advanced pub/sub features needed (pattern matching, consumer groups)
+
+**Hybrid Approach** (if needed later):
+```
+Application → Redis (pub/sub) → WebSocket clients
+                ↓
+           PostgreSQL (persistent)
+```
+
+For now, PostgreSQL-only supports all planned features without Redis complexity.
 
 #### Implementation: PostgreSQL Session Store
 
@@ -749,9 +953,63 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
    - Who deleted what data when
    - Chain of custody for exported records
 
+### 2.7 Tiered Retention by Conversation Type (Discussion)
+
+**Question**: Should all conversations have 7-year retention, or should retention vary by use case?
+
+**Current Design**: Uniform 7-year retention for all conversations and query traces.
+
+**Critique**: Not all ATO officer interactions create Commonwealth records of equal value. Storing 7 years of "how do I..." queries creates unnecessary cost and privacy risk.
+
+#### Proposed Tiered Retention Model
+
+| Conversation Type | Example | Proposed Retention | Rationale | GDS Reference |
+|-------------------|---------|-------------------|-----------|---------------|
+| **Formal audit decision support** | "What penalties apply to case AUD-2024-12345?" | 7 years | Evidence of decision-making | GDS: Audit records |
+| **Technical advice research** | "Explain s 288-95 for this taxpayer scenario" | 7 years | Part of advice record | GDS: Technical advice |
+| **Policy/legislation research** | "What does the latest TR say about FBT?" | 3 years | Administrative use | GDS: Administrative records |
+| **Educational/learning queries** | "How do I calculate the small business CGT discount?" | 1 year | Training, not business record | GDS: Training materials |
+| **Test/exploration queries** | User testing system features | 90 days | Not substantive business | N/A |
+
+#### Implementation Considerations
+
+**User Experience**:
+- At session creation, prompt user to select conversation purpose
+- Privacy notice: "Conversations supporting audit decisions are retained for 7 years. Learning conversations are retained for 1 year."
+- Allow user to change classification during session
+
+**Technical Implementation**:
+```sql
+CREATE TABLE sessions (
+    session_id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    conversation_type VARCHAR(50) NOT NULL, -- 'AUDIT_DECISION', 'TECHNICAL_ADVICE', 'LEARNING', 'TEST'
+    retention_years INTEGER NOT NULL DEFAULT 7,
+    -- ... other fields
+);
+
+CREATE INDEX idx_sessions_retention ON sessions(retention_until, conversation_type);
+```
+
+**Benefits**:
+- Reduced storage costs (~30-40% reduction if 50% of conversations are learning/test)
+- Improved privacy (less data retained unnecessarily)
+- More accurate records classification
+- Better user trust (transparent about retention)
+
+**Challenges**:
+- Users may misclassify to avoid retention
+- Requires Records Management approval for tiered approach
+- Complex to implement and audit
+- What if conversation changes type mid-session?
+
+**Recommendation**: Discuss tiered retention with Records Management. If approved, implement as Phase 2 feature. Start with uniform 7-year retention for compliance.
+
 ---
 
 ## 3. RBAC and Fine-Grained Access Control
+
+**Note**: Sections 3.6-3.8 (Encryption, DLQ Alerting, Observability) incorporate patterns from the AI Coach reference architecture, including envelope encryption, SNS-based alerting with PagerDuty/Datadog/Slack integration, and LangFuse self-hosted tracing with production redaction.
 
 ### 3.1 Current Design Gaps
 
@@ -1031,37 +1289,26 @@ def search_user_documents(user_id: UUID, query: str):
 2. **OpenSearch level**: Index-level access control (OpenSearch Security plugin)
 3. **Network level**: Private VPC, no direct OpenSearch access from internet
 
-### 3.6 Application-Level Encryption
+### 3.6 End-to-End Encryption Specification
 
-**Question**: Should we encrypt sensitive fields at the application layer before writing to PostgreSQL?
+**Based on AI Coach pattern**: Comprehensive encryption strategy covering data in transit, at rest, and application layer.
 
-**Analysis**:
+#### Encryption Layers
 
-| Approach | Benefits | Drawbacks | Recommendation |
-|----------|----------|-----------|----------------|
-| **No app-layer encryption** | Simpler, searchable | DBA with DB access can read | Acceptable for ATO internal (DBA = trusted) |
-| **Column-level encryption** | Defense in depth | Can't search encrypted data | Not recommended for chat content |
-| **Per-user KMS keys** | Maximum isolation | Complex key management, can't search | Overkill for internal system |
-| **Envelope encryption** | Balance of security/usability | Moderate complexity | Optional for highly sensitive sessions |
+| Layer | Mechanism | Specification |
+|-------|-----------|---------------|
+| **In-transit (all hops)** | TLS 1.3 | TLS 1.3 minimum for all external connections |
+| **Internal service-to-service** | mTLS via App Mesh | mTLS between internal services using AWS App Mesh |
+| **RDS PostgreSQL at rest** | AES-256 + KMS CMK per account | AWS KMS Customer Managed Key (CMK) per account |
+| **S3 documents** | SSE-KMS | Same CMK as RDS; bucket policy denies unencrypted PUTs |
+| **Session messages (JSONB)** | Envelope encryption | Per-session DEK (AES-256-GCM) wrapped by KMS CMK |
+| **Document chunk content** | Per-project DEK | Per-project DEK wrapped by KMS CMK |
+| **Secrets (DB passwords, API keys)** | AWS Secrets Manager + KMS | Injected at ECS task start, never in code |
 
-**Recommendation**: For ATO internal use, **rely on infrastructure encryption**:
+#### Envelope Encryption Implementation
 
-- Aurora: Encrypted at rest with AWS KMS (AWS-managed key)
-- S3: SSE-KMS encryption
-- In transit: TLS 1.3+ for all connections
-- IAM: Least-privilege access policies
+**Rationale**: Content unreadable without KMS access, providing defense-in-depth even if database is compromised.
 
-**Enhanced Recommendation - Envelope Encryption** (Based on AI Coach pattern):
-
-For highly sensitive sessions (e.g., audit support for litigation), add envelope encryption:
-
-| Data Type | Encryption Method | Rationale |
-|-----------|------------------|-----------|
-| Session messages (JSONB) | Per-session DEK (AES-256-GCM) wrapped by KMS CMK | Content unreadable without KMS access |
-| Document chunk content | Per-project DEK wrapped by KMS CMK | Enables search, protects at rest |
-| Static KB content | Aurora/KMS encryption | Simpler, no per-item overhead |
-
-**Envelope Encryption Implementation**:
 ```sql
 -- Encryption metadata table
 CREATE TABLE encryption_keys (
@@ -1084,11 +1331,27 @@ CREATE TABLE conversation_messages_enveloped (
 );
 ```
 
-**When to add envelope encryption**:
-- Audit sessions for legal proceedings
-- Highly sensitive taxpayer data discussions
-- When data must be protected from DBAs
-- Compliance requirement for customer-managed encryption keys
+#### S3 Bucket Policy (Enforce Encryption)
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyUnencryptedObjectUploads",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::case-assistant-documents/*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": "aws:kms"
+        }
+      }
+    }
+  ]
+}
+```
 
 ---
 
@@ -1210,11 +1473,14 @@ CREATE TABLE manual_review_queue (
 
 #### Composite Monitoring (Datadog)
 
-**Correlation Examples**:
-- Chunk failures + ECS CPU saturation = Infrastructure issue
-- Chunk failures + Cohere API error rate = Third-party issue
-- LLM failures + Bedrock error rate = AWS service issue
-- Query trace failures + Aurora latency = Database issue
+**Correlation Examples** (for faster root-cause analysis):
+- Chunk failures + **ECS CPU saturation** = Infrastructure issue
+- Chunk failures + **Cohere API error rate** = Third-party API issue
+- Chunk failures + **MSK consumer lag** = Streaming pipeline issue
+- LLM failures + **Bedrock error rate** = AWS service issue
+- Query trace failures + **Aurora latency** = Database issue
+
+**Datadog Composite Monitors**:
 
 **Datadog Dashboard**:
 ```yaml
@@ -1867,20 +2133,24 @@ CREATE TABLE query_traces (
     query_rewritten TEXT,
     detected_citations JSONB,
 
-    -- Retrieval
-    citation_lookup JSONB,
-    vector_search JSONB,
-    bm25_search JSONB,
-    reranking JSONB,
+    -- Retrieval (optimized - store IDs, not full text)
+    citation_lookup JSONB,              -- Matched citation, title, chunk pointers
+    vector_search JSONB,                -- Chunk IDs and scores only
+    bm25_search JSONB,                  -- Chunk IDs and scores only
+    reranking JSONB,                    -- Final ranking of chunk IDs
+
+    -- Context optimization: Store chunk references instead of full text
+    context_chunk_ids JSONB,            -- ["chunk-001", "chunk-002", "chunk-003"]
+    context_chunk_versions JSONB,       -- {"chunk-001": "v1", "chunk-002": "v1"}
+    context_hash BYTEA,                 -- SHA-256 for integrity verification
 
     -- LLM
     llm_model VARCHAR(100),
-    llm_context_sent TEXT,
-    llm_response_full TEXT,
+    llm_response_full TEXT NOT NULL,    -- Full response IS stored
     llm_parameters JSONB,
 
     -- Results
-    citations JSONB,
+    citations JSONB,                    -- Chunk IDs, text snippets, positions
     token_count INTEGER,
     duration_ms INTEGER,
 
@@ -2031,15 +2301,40 @@ AUTHORITY NUMBER: [To be assigned]
 
 ## Appendix B: Open Questions
 
-1. **Records Authority**: Has the ATO Records Management team been engaged? What is the timeline for obtaining NAA authority?
+### Blocking Questions (Must Answer Before Implementation)
 
-2. **Cost Approval**: 7-year retention increases costs significantly (~$15K/year vs near-zero for current design). Is this budgeted?
+1. **Deployment Scenario**: Is this system for public taxpayer-facing use OR ATO internal use?
+   - This determines the entire architecture direction
+   - Public-facing: Ephemeral sessions acceptable, 90-day retention
+   - ATO internal: 7-year retention, Records Authority required
 
-3. **Discovery**: In legal discovery proceedings, can we be required to produce query traces? What's the protocol?
+2. **Records Authority Engagement**: Has the ATO Records Management team been engaged? What is the timeline for obtaining NAA authority?
 
-4. **Cross-Region**: If we deploy to multiple AWS regions for resilience, how do we handle records retention across regions?
+3. **Legal Basis for AI Conversations**: Has legal counsel confirmed that AI conversations are Commonwealth records? What is the specific legal basis?
 
-5. **Export Format**: If we need to export records to National Archives, what format? (PDF conversation logs, JSON data dumps, etc.)
+### Architecture Questions
+
+4. **Cost Approval**: 7-year retention increases costs significantly (~$15K/year vs near-zero for current design). Is this budgeted?
+
+5. **Tiered Retention**: Should different conversation types have different retention periods? (e.g., learning queries: 1 year, audit decisions: 7 years)
+
+6. **Query Trace Storage**: Store full LLM context or just chunk IDs? (Recommendation: Chunk IDs with versioning for 99% cost reduction)
+
+7. **Cross-Region**: If we deploy to multiple AWS regions for resilience, how do we handle records retention across regions?
+
+8. **Export Format**: If we need to export records to National Archives, what format? (PDF conversation logs, JSON data dumps, etc.)
+
+9. **Real-Time Features**: Do we need WebSocket streaming? Can PostgreSQL NOTIFY handle it or do we need Redis?
+
+### Operational Questions
+
+10. **Discovery Protocol**: In legal discovery proceedings, can we be required to produce query traces? What's the protocol?
+
+11. **User Offboarding**: When an ATO officer leaves or is under investigation, how do we handle their data?
+
+12. **SIEM Integration**: Does ATO have a centralized SIEM (Splunk, ELK) that we need to forward logs to?
+
+**For detailed discussion of these questions, see [14a-questions-and-gaps.md](./14a-questions-and-gaps.md).**
 
 ---
 
