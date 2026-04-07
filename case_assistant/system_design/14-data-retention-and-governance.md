@@ -1,6 +1,6 @@
 # Data Retention, Governance, and Access Control
 
-**Document Version**: 1.0.0
+**Document Version**: 1.1.0
 **Date**: 2026-04-07
 **Author**: Principal AI Engineer
 **Status**: Design Discussion
@@ -10,13 +10,24 @@
 
 ## Executive Summary
 
-This document addresses critical gaps in the current system design regarding data classification, retention policies, and access controls for ATO internal use. The current design prioritizes temporary, ephemeral sessions for privacy - appropriate for public taxpayer-facing applications but **misaligned with ATO's Commonwealth records obligations**.
+This document explores data classification, retention policies, and access controls for the Case Assistant system. The current design prioritizes temporary, ephemeral sessions with automatic data deletion—a design appropriate for public taxpayer-facing applications but potentially misaligned with ATO internal data governance requirements.
 
-**Key Finding**: The Archives Act 1983 requires that Commonwealth records cannot be destroyed without National Archives authority. The current design's auto-deletion of conversation history and session data after 7-30 days constitutes unauthorized destruction of Commonwealth records.
+**Open Question**: What are the actual data governance requirements for this system?
 
-**Recommendation**: Implement a dual-layer architecture:
+Two scenarios require different approaches:
+
+| Scenario | Current Design Fit | Required Changes (if applicable) |
+|----------|-------------------|-------------------------------|
+| **Public Taxpayer-Facing** | ✅ Well-aligned | Ephemeral sessions, auto-deletion appropriate for public access |
+| **ATO Internal Use** | ⚠️ Potentially misaligned | May require records retention, audit trails, longer retention |
+
+**Key Discussion Point**: If the system is classified as creating Commonwealth records under the Archives Act 1983, auto-deletion of conversation history and session data may not be permitted without National Archives authority.
+
+**Recommendation**: This document proposes a dual-layer architecture for the ATO internal use case:
 1. **Application layer**: Temporary session-scoped document storage (7-day TTL on uploaded PDFs)
 2. **Records layer**: Persistent conversation and query history (7-year minimum retention) with soft-delete
+
+**Action Required**: Engage with ATO Records Management team to confirm actual requirements before implementing this architecture.
 
 ---
 
@@ -550,7 +561,7 @@ Based on Aurora PostgreSQL r6g.large (2 vCPU, 16GB RAM):
 
 ## 2. Session Lifecycle and Retention Policy
 
-### 2.1 Current Design vs Archives Act Requirements
+### 2.1 Current Design vs Potential Records Requirements
 
 **Current design** (from 04-session-lifecycle.md):
 ```
@@ -560,7 +571,7 @@ Conversation: Persists after document deletion
 Cleanup: After 30-day grace period
 ```
 
-**Problem**: Auto-deletion of conversation history after 30 days = unauthorized destruction of Commonwealth records.
+**Potential Issue**: If conversations are classified as Commonwealth records, auto-deletion after 30 days may conflict with records retention requirements.
 
 ### 2.2 Proposed Retention Policy
 
@@ -1037,17 +1048,345 @@ def search_user_documents(user_id: UUID, query: str):
 
 - Aurora: Encrypted at rest with AWS KMS (AWS-managed key)
 - S3: SSE-KMS encryption
-- In transit: TLS 1.2+ for all connections
+- In transit: TLS 1.3+ for all connections
 - IAM: Least-privilege access policies
 
-**When to add app-layer encryption**:
-- If system expands to external users (taxpayers)
-- If handling highly sensitive taxpayer data
-- If data must be protected from DBAs (not needed for internal)
+**Enhanced Recommendation - Envelope Encryption** (Based on AI Coach pattern):
+
+For highly sensitive sessions (e.g., audit support for litigation), add envelope encryption:
+
+| Data Type | Encryption Method | Rationale |
+|-----------|------------------|-----------|
+| Session messages (JSONB) | Per-session DEK (AES-256-GCM) wrapped by KMS CMK | Content unreadable without KMS access |
+| Document chunk content | Per-project DEK wrapped by KMS CMK | Enables search, protects at rest |
+| Static KB content | Aurora/KMS encryption | Simpler, no per-item overhead |
+
+**Envelope Encryption Implementation**:
+```sql
+-- Encryption metadata table
+CREATE TABLE encryption_keys (
+    key_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id UUID NOT NULL,
+    encrypted_key BYTEA NOT NULL, -- DEK encrypted by KMS CMK
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days')
+);
+
+-- Session messages with envelope encryption reference
+CREATE TABLE conversation_messages_enveloped (
+    message_id UUID PRIMARY KEY,
+    session_id UUID NOT NULL,
+    key_id UUID REFERENCES encryption_keys(key_id),
+    encrypted_content BYTEA NOT NULL, -- AES-256-GCM encrypted
+    nonce BYTEA NOT NULL,
+    auth_tag BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+**When to add envelope encryption**:
+- Audit sessions for legal proceedings
+- Highly sensitive taxpayer data discussions
+- When data must be protected from DBAs
+- Compliance requirement for customer-managed encryption keys
 
 ---
 
-### 3.7 Vector Database Access Control for RAG
+### 3.6.1 Per-Account Customer Managed Keys (CMK)
+
+**Enhanced Security Model** - Based on AI Coach pattern:
+
+For additional security isolation, use AWS KMS Customer Managed Keys (CMK) per account:
+
+| Layer | Key Type | Scope | Benefit |
+|-------|----------|-------|---------|
+| **Aurora PostgreSQL** | Per-account CMK | All data in account's tables | Separate key, revocable per account |
+| **S3 documents** | Per-account CMK | Document bucket for account | Account-level encryption, separate access policies |
+| **Session messages** | Per-session DEK | Wrapped by account CMK | Forward secrecy, compromise limits to one session |
+
+**Benefits**:
+- **Granular access control**: Compromised key affects only one account
+- **Audit trail**: Each KMS decrypt operation is logged in CloudTrail
+- **Compliance**: Customer-managed keys provide encryption sovereignty
+- **Revocation**: Keys can be disabled or rotated per account
+
+**Implementation Considerations**:
+- Cost: KMS CMK has monthly cost (~$1/month per key)
+- Key management: Need to provision key on account creation
+- Rotation: Automatic key rotation every 1-3 years
+- Performance: KMS decrypt adds ~5-10ms latency per operation
+
+**Recommendation**: Per-account CMK is **optional** for ATO internal use but recommended if:
+- System expands to external users
+- Compliance requires customer-managed encryption keys
+- Legal discovery requires key-level access controls
+
+---
+
+### 3.7 Dead Letter Queue and Alerting Strategy
+
+**Based on AI Coach pattern**: Automated DLQ handling with multi-channel alerting.
+
+#### DLQ Architecture
+
+```mermaid
+graph LR
+    subgraph "Failure Detection"
+        FAIL[Operation Fails<br/>3 retries exhausted]
+        SQS[SQS Dead Letter Queue<br/>Failed messages queued]
+    end
+
+    subgraph "Monitoring"
+        ALARM[CloudWatch Alarm<br/>DLQ depth > 0 for 1min]
+    end
+
+    subgraph "Alert Channels"
+        PD[PagerDuty<br/>P3 incident business hours<br/>P2 critical incidents]
+        DD[Datadog<br/>Metrics + correlations<br/>Unified dashboard]
+        SL[Slack<br/>#case-assistant-alerts<br/>Engineering team]
+    end
+
+    subgraph "Recovery"
+        RETRY1[Chunk Reprocessor<br/>Lambda/K8s Job<br/>Retry from DLQ]
+        MANUAL[Manual Review Table<br/>After 3rd failure]
+        JIRA[JIRA Auto-ticket<br/>Priority based on severity]
+    end
+
+    FAIL --> SQS
+    SQS --> ALARM
+    ALARM --> PD
+    ALARM --> DD
+    ALARM --> SL
+
+    SQS --> RETRY1
+    RETRY1 -->|Failure 2| RETRY1
+    RETRY1 -->|Failure 3| MANUAL
+    MANUAL --> JIRA
+
+    style FAIL fill:#FFCDD2
+    style SQS fill:#FFF3E0
+    style MANUAL fill:#FFE0B2
+    style JIRA fill:#E1F5FE
+```
+
+#### Alert Thresholds and Escalation
+
+| Metric | Threshold | Alert | Escalation |
+|--------|-----------|-------|------------|
+| **Chunk DLQ depth** | > 0 for 1 min | PagerDuty P3 + Datadog + Slack | On-call engineer |
+| **Embedding API error rate** | > 5% in 5 min | PagerDuty P2 + Datadog + Slack | Senior engineer |
+| **LLM call DLQ depth** | > 0 for 1 min | PagerDuty P2 + Datadog + Slack | Senior engineer |
+| **Embedding latency p99** | > 5s for 5 min | Datadog + Slack | Performance review |
+| **Query trace storage fails** | > 1% in 5 min | PagerDuty P2 + Datadog | Data engineering |
+| **RLS policy violation** | Any occurrence | PagerDuty P1 + Slack | Security incident |
+
+#### Manual Review and Recovery
+
+**Manual Review Table**:
+```sql
+CREATE TABLE manual_review_queue (
+    item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    failure_type VARCHAR(100) NOT NULL,
+    account_id UUID,
+    user_id UUID,
+    chunk_id UUID,
+    document_id UUID,
+    error_message TEXT,
+    retry_count INTEGER NOT NULL,
+    failed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status VARCHAR(50) DEFAULT 'PENDING',  -- PENDING, IN_REVIEW, RESOLVED, IGNORED
+    reviewed_by UUID,
+    reviewed_at TIMESTAMPTZ,
+    resolution TEXT,
+    jira_ticket_id VARCHAR(100)
+);
+```
+
+**Recovery Workflow**:
+1. **Failure 1-2**: Automatic retry with exponential backoff
+2. **Failure 3**: Move to manual review table, create JIRA ticket
+3. **JIRA priority**: Based on failure type and business impact
+4. **Resolution options**: Retry manually, mark as ignored, escalate
+
+#### Composite Monitoring (Datadog)
+
+**Correlation Examples**:
+- Chunk failures + ECS CPU saturation = Infrastructure issue
+- Chunk failures + Cohere API error rate = Third-party issue
+- LLM failures + Bedrock error rate = AWS service issue
+- Query trace failures + Aurora latency = Database issue
+
+**Datadog Dashboard**:
+```yaml
+dashboard:
+  title: Case Assistant Operations
+  templates:
+    - name: Chunk Failure Rate
+      query: rate(sum:case_assistant.chunk.failed{!retry:yes}) by {failure_type}
+      thresholds: [avg: 5, max: 10]
+    - name: LLM Error Rate
+      query: rate(sum:case_assistant.llm.error) by {model, error_type}
+      thresholds: [avg: 1, max: 5]
+    - name: RLS Violations
+      query: sum:case_assistant.rls.violation)
+      thresholds: [max: 0]  # Any violation is critical
+```
+
+---
+
+### 3.8 Observability with Privacy-Preserving Tracing
+
+**Based on AI Coach LangFuse pattern**: Self-hosted tracing with production redaction.
+
+#### LangFuse Architecture
+
+| Component | Deployment | Data Retention | Privacy |
+|-----------|------------|-----------------|---------|
+| **LangFuse** | ECS Fargate (self-hosted) | 30 days | Redacted at source |
+| **Trace capture** | One trace per user turn | 30 days | Content replaced with [REDACTED] |
+| **Metadata retained** | session_id, account_id, latency, model | 30 days | No PII or content |
+
+#### Production Redaction Strategy
+
+```python
+def redact_trace_for_langfuse(trace: dict) -> dict:
+    """
+    Redact sensitive content before sending to LangFuse.
+    Only metadata is retained for observability.
+    """
+    redacted = trace.copy()
+
+    # Redact user messages
+    if redacted.get("user_message"):
+        redacted["user_message"] = "[REDACTED]"
+
+    # Redact assistant responses
+    if redacted.get("assistant_message"):
+        redacted["assistant_message"] = "[REDACTED]"
+
+    # Redact retrieved chunks
+    if redacted.get("retrieved_chunks"):
+        for chunk in redacted["retrieved_chunks"]:
+            chunk["content"] = "[REDACTED]"
+            chunk["text"] = "[REDACTED]"
+
+    # Retain only metadata for observability
+    redacted["metadata_only"] = True
+
+    return redacted
+```
+
+#### Trace Schema (Redacted)
+
+```json
+{
+  "trace_id": "trace-20260407-001",
+  "session_id": "sess-abc-123",
+  "account_id": "account-xyz",
+  "user_id": "user-123",
+  "timestamp": "2026-04-07T10:30:00Z",
+
+  "spans": [
+    {
+      "name": "content_safety_check",
+      "status": "success",
+      "latency_ms": 45,
+      "model": "comprehend",
+      "input": "[REDACTED]",
+      "output": "[REDACTED]"
+    },
+    {
+      "name": "rag_retrieval",
+      "status": "success",
+      "latency_ms": 350,
+      "chunks_retrieved": 5,
+      "retrieved_chunks": [
+        {"chunk_id": "chunk-001", "content": "[REDACTED]"},
+        {"chunk_id": "chunk-002", "content": "[REDACTED]"}
+      ]
+    },
+    {
+      "name": "llm_generation",
+      "status": "success",
+      "latency_ms": 1500,
+      "model": "claude-3-5-sonnet",
+      "input_tokens": 450,
+      "output_tokens": 847,
+      "input": "[REDACTED]",
+      "output": "[REDACTED]"
+    }
+  ],
+
+  "metadata_only": true
+}
+```
+
+#### Observability Stack
+
+```mermaid
+graph TB
+    subgraph "Application"
+        API[Coaching API]
+        RAG[RAG Service]
+        LLM[LLM Proxy]
+    end
+
+    subgraph "Tracing Layer"
+        REDACT[Redaction Middleware<br/>Content → [REDACTED]]
+        LANGFUSE[LangFuse Self-Hosted<br/>ECS Fargate]
+    end
+
+    subgraph "Metrics Layer"
+        CLOUDWATCH[CloudWatch Metrics<br/>Latency, error rates]
+        DATADOG[Datadog<br/>Dashboards, alerts]
+    end
+
+    API --> REDACT
+    RAG --> REDACT
+    LLM --> REDACT
+
+    REDACT --> LANGFUSE
+    REDACT --> CLOUDWATCH
+    REDACT --> DATADOG
+
+    style REDACT fill:#FFEBEE
+    style LANGFUSE fill:#E3F2FD
+    style CLOUDWATCH fill:#FFF3E0
+    style DATADOG fill:#FFF59D
+```
+
+#### LangFuse Self-Hosting Benefits
+
+| Benefit | Description |
+|---------|-------------|
+| **Data sovereignty** | All trace data stays in ATO VPC |
+| **Cost control** | No external SaaS subscription |
+| **Privacy** | Redaction at source, no third-party access |
+| **Integration** | Correlate with CloudWatch and Datadog |
+| **Retention control** | Delete data anytime, no vendor lock-in |
+
+#### Alternative: OpenTelemetry + CloudWatch
+
+If LangFuse self-hosting is too complex, use OpenTelemetry with CloudWatch:
+
+```python
+from opentelemetry import trace
+from opentelemetry.exporter.cloudwatch import CloudWatchSpanExporter
+
+# Configure exporter
+exporter = CloudWatchSpanExporter()
+
+# Tracing with automatic redaction
+@tracer
+async def process_query(query: str):
+    trace.get_current_span().set_attribute("user_query", "[REDACTED]")
+    trace.get_current_span().set_attribute("account_id", account_id)
+    # ... process query
+```
+
+---
+
+### 3.9 Vector Database Access Control for RAG
 
 **Critical Challenge**: In RAG applications, the vector database is a potential data leak point. Unlike PostgreSQL where RLS filters rows automatically, vector databases require explicit metadata filtering at query time.
 
@@ -1206,6 +1545,202 @@ def test_rag_isolation():
         assert result["user_id"] == user_a.id, \
             f"Cross-tenant leak: {result['chunk_id']} belongs to {result['user_id']}"
 ```
+
+---
+
+### 3.10 Kafka & Outbox Pattern for Async Events
+
+**Based on AI Coach pattern**: Event-driven architecture with outbox pattern for reliable event delivery.
+
+#### Architecture Overview
+
+```mermaid
+graph LR
+    subgraph "Application Layer"
+        API[Case Assistant API]
+        DB[(PostgreSQL)]
+    end
+
+    subgraph "Outbox Pattern"
+        OUTBOX[Outbox Table<br/>Atomic write with turn]
+        DEBEZIUM[Debezium CDC<br/>Tails WAL]
+    end
+
+    subgraph "Event Streaming"
+        KAFKA[Amazon MSK / Kafka<br/>Event streaming]
+    end
+
+    subgraph "Consumers"
+        ANALYTICS[Analytics Pipeline<br/>Snowflake / S3]
+        ALERTING[Alerting & Monitoring<br/>Datadog / Slack]
+        ARCHIVAL[Archival<br/>S3 Glacier]
+    end
+
+    API --> DB
+    API --> OUTBOX
+    OUTBOX --> DEBEZIUM
+    DEBEZIUM --> KAFKA
+    KAFKA --> ANALYTICS
+    KAFKA --> ALERTING
+    KAFKA --> ARCHIVAL
+
+    style OUTBOX fill:#FFF3E0
+    style DEBEZIUM fill:#E8F5E9
+    style KAFKA fill:#FFCC80
+```
+
+#### Outbox Pattern Implementation
+
+**Problem**: Need reliable event delivery without distributed transactions across PostgreSQL, S3, OpenSearch, and analytics.
+
+**Solution**: Write events atomically to outbox table in same transaction as data changes. CDC (Change Data Capture) tails the WAL and publishes to Kafka.
+
+```sql
+-- Outbox table for reliable event delivery
+CREATE TABLE outbox_events (
+    event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_type VARCHAR(100) NOT NULL,  -- 'session', 'query', 'document'
+    aggregate_id UUID NOT NULL,
+    event_type VARCHAR(100) NOT NULL,  -- 'created', 'updated', 'deleted'
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed_at TIMESTAMPTZ,
+
+    CONSTRAINT unprocessed_outbox CHECK (processed_at IS NULL)
+);
+
+-- Index for CDC to tail
+CREATE INDEX idx_outbox_unprocessed ON outbox_events (created_at)
+    WHERE processed_at IS NULL;
+```
+
+**Transaction Pattern**:
+```python
+async def create_session_with_event(session_data: dict):
+    async with database.transaction():
+        # 1. Create session
+        session = await database.query(
+            "INSERT INTO sessions (...) VALUES (...) RETURNING *",
+            session_data
+        )
+
+        # 2. Write outbox event (same transaction)
+        await database.query(
+            """INSERT INTO outbox_events
+               (aggregate_type, aggregate_id, event_type, payload)
+               VALUES ('session', $1, 'created', $2)""",
+            session["session_id"],
+            json.dumps({
+                "session_id": session["session_id"],
+                "user_id": session["user_id"],
+                "created_at": session["created_at"]
+            })
+        )
+
+        # 3. Transaction commits - both persist together
+        # 4. Debezium CDC detects new row and publishes to Kafka
+```
+
+#### Event Schema and Topics
+
+| Topic | Event Type | Consumer | Purpose |
+|-------|-----------|----------|---------|
+| **case-assistant.session.completed** | Session created, query completed | Analytics pipeline | Usage metrics, user behavior |
+| **case-assistant.query.failed** | Query error, timeout | Alerting | Operational monitoring |
+| **case-assistant.chunk.failed** | Embedding failure | Alerting + manual review | DLQ monitoring |
+| **case-assistant.user.consent** | Consent granted/revoked | Compliance audit | Legal compliance |
+
+#### Debezium CDC Configuration
+
+```yaml
+# Debezium configuration for PostgreSQL CDC
+connector:
+  name: case-assistant-outbox
+  class: io.debezium.connector.postgresql.PostgresConnector
+
+database:
+  hostname: aurora-cluster.cluster-xyz.ap-southeast-2.rds.amazonaws.com
+  port: 5432
+  username: debezium_user
+  password: ${DEBEZIUM_PASSWORD}
+  database: case_assistant
+  plugin.name: pgoutput
+
+properties:
+  plugin.name: pgoutput
+  publication.name: case_assistant_outbox
+  table.include.list: public.outbox_events
+
+  # Snapshot mode (schema_only = no existing data)
+  snapshot.mode: schema_only
+
+  # Event processing
+  transforms: "outbox_events"
+  transforms.unwrap.smt.type: none
+  delete.tombstone.handling.mode: emit
+
+  # Kafka settings
+  kafka.bootstrap.servers: ${KAFKA_BROKERS}
+  kafka.topic.prefix: case-assistant-
+  kafka.acks: all
+  kafka.retries: 3
+
+  # Error handling
+  errors.retry.timeout: -1  # Retry forever
+  errors.retry.delay.ms: 1000
+```
+
+#### Kafka Topics Configuration
+
+| Topic | Partitions | Retention | Purpose |
+|-------|-----------|----------|---------|
+| case-assistant.session.completed | 6 | 7 days | Session analytics, user behavior |
+| case-assistant.query.failed | 3 | 30 days | Error monitoring, operational metrics |
+| case-assistant.chunk.failed | 3 | 30 days | DLQ monitoring, quality tracking |
+| case-assistant.user.consent | 3 | 7 years | Compliance audit, legal requirements |
+
+#### Consumer Patterns
+
+**Analytics Pipeline**:
+```python
+async def process_session_events(events: list[dict]):
+    """Process session completion events for analytics."""
+    for event in events:
+        # Aggregate metrics
+        await analytics.upsert({
+            "date": event["created_at"].date(),
+            "user_id": event["user_id"],
+            "session_type": event["session_type"],
+            "turns_count": event["turns_count"],
+            "duration_seconds": event["duration_seconds"],
+            "queries_count": event["queries_count"]
+        })
+
+        # Write to analytics warehouse (Snowflake, S3, etc.)
+        await warehouse.write(event)
+```
+
+#### Benefits of Outbox + Kafka Pattern
+
+| Benefit | Description |
+|---------|-------------|
+| **Atomic guarantees** | Events and data persist together or not at all |
+| **No distributed transactions** | Simple ACID transactions in PostgreSQL only |
+| **Decoupling** | Producers don't need to know about consumers |
+| **Replay capability** | Kafka events can be replayed for reprocessing |
+| **Scalability** | Consumers scale independently of producers |
+| **Reliability** | At-least-once delivery guaranteed by Kafka + CDC |
+| **Audit trail** | All events retained in Kafka for compliance |
+
+#### When to Use This Pattern
+
+| Use Case | Use Kafka + Outbox | Alternative |
+|----------|-----------------|------------|
+| **Analytics pipeline** | ✅ Yes | Direct database queries |
+| **Real-time monitoring** | ✅ Yes | CloudWatch metrics |
+| **Audit trail** | ✅ Yes | Database audit logs |
+| **Simple notifications** | ❌ No | SNS direct (simpler) |
+| **Low-latency events** | ❌ No | EventBridge (faster) |
 
 ---
 
