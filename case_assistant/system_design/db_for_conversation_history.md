@@ -1,6 +1,6 @@
 # Database for Conversation History: Aurora PostgreSQL vs OpenSearch
 
-**Document Version**: 1.0.0
+**Document Version**: 1.1.0
 **Date**: 2026-04-22
 **Author**: Principal AI Engineer
 **Status**: Design Recommendation
@@ -10,7 +10,9 @@
 
 ## Executive Summary
 
-**Recommendation**: Use **Aurora PostgreSQL + pgvector** as the primary and ONLY conversation history store for Case Chat. OpenSearch ml-commons conversational memory should NOT be used.
+**Recommendation**: Use **Aurora PostgreSQL** as the primary and ONLY conversation history store for Case Chat. OpenSearch ml-commons conversational memory should NOT be used.
+
+**Note on pgvector**: If pgvector is not permitted in your environment, Aurora PostgreSQL remains the correct choice. Semantic search over conversations is **optional** and not a core requirement. Sequential retrieval and keyword search (via `tsvector`) cover all stated needs.
 
 ### Definitive Answer
 
@@ -20,8 +22,9 @@
 | **Compliance** | ACID, PITR, 7-year retention | Eventually consistent, no PITR | ATO/government requirements |
 | **Session model** | Indefinite persistence, 7-day doc TTL | Not designed for TTL patterns | Matches session lifecycle |
 | **Cost** | ~$250/month | ~$430/month + Aurora for compliance | Single system vs dual |
+| **Semantic search** | Optional (pgvector if approved) | Built-in | Not a core requirement |
 
-**Aurora PostgreSQL + pgvector is the correct technical choice.**
+**Aurora PostgreSQL is the correct technical choice** — with or without pgvector.
 
 ---
 
@@ -38,18 +41,17 @@
 
 ## Technology Comparison
 
-### Aurora PostgreSQL with pgvector
+### Aurora PostgreSQL
 
 | Capability | Specification |
 |------------|----------------|
-| **Vector Support** | Up to 16,000 dimensions, supports float32/half/binary/sparse |
-| **Index Types** | HNSW (fast query, high recall), IVFFlat (faster build, lower memory) |
-| **Distance Functions** | L2, inner product, cosine, L1, Hamming, Jaccard |
+| **Vector Support** (optional) | pgvector extension if approved; up to 16,000 dimensions |
+| **Full-Text Search** | Native `tsvector`/`tsquery` with GIN indexes |
 | **ACID Compliance** | Full - WAL replication, point-in-time recovery |
-| **Hybrid Search** | Vector + GIN full-text indexes, efficient pre-filtering |
+| **Relational** | JOINs, foreign keys, constraints, row-level security |
 | **Scalability** | Vertical scaling, read replicas, partitioning |
 | **Storage Cost** | ~50-70% cheaper than OpenSearch |
-| **Query Latency** | Sub-100ms for typical ANN queries |
+| **Query Latency** | <10ms sequential, <100ms keyword search |
 
 **Strengths**:
 - Strong consistency guarantees
@@ -57,11 +59,12 @@
 - Complex relational queries (JOINs, foreign keys)
 - Point-in-time recovery for compliance
 - Lower total cost of ownership
+- Native full-text search (`tsvector`) covers keyword search needs
 
 **Limitations**:
-- Vector search throughput lower than dedicated vector DBs at extreme scale (>10M messages)
+- Semantic search requires pgvector (if approved)
+- Vector search throughput lower than OpenSearch at extreme scale (>10M messages)
 - Analytics queries require materialized views
-- Full-text search less powerful than OpenSearch
 
 ### OpenSearch with k-NN
 
@@ -267,6 +270,37 @@ Running two databases for what PostgreSQL can do alone:
 
 | Trigger | What Changes | Action |
 |---------|-------------|--------|
+| **Semantic search becomes hard requirement** | Users need "find similar conversations" | Option A: Get pgvector approved<br>Option B: Add OpenSearch as secondary via CDC |
+| **Architecture migrates to OpenSearch agents** | Chat Engine moves inside ml-commons | Re-evaluate ml-commons memory |
+| **Conversations become authoritative sources** | System shifts to conversation-first | Semantic search may justify OpenSearch |
+| **Message volume exceeds 10M** | PostgreSQL performance degrades | Add OpenSearch as secondary via CDC |
+| **Real-time analytics becomes core** | Dashboard is primary use case | Add OpenSearch analytics via CDC |
+
+### If Semantic Search Required Without pgvector
+
+If "find similar conversations" becomes a hard requirement but pgvector is not approved:
+
+**Option A**: Add OpenSearch as secondary index via CDC
+```
+Chat Engine → Aurora (primary, writes only)
+                 ↓
+              CDC Stream
+                 ↓
+            OpenSearch (search index for conversations)
+```
+- Aurora remains source of truth
+- OpenSearch handles semantic + full-text search
+- Eventual consistency acceptable for search feature
+
+**Option B**: Request pgvector approval
+- pgvector is a well-established extension
+- Used by many AWS Aurora customers
+- Can be evaluated for security/compliance
+
+These are **architectural shifts**, not feature additions.
+
+| Trigger | What Changes | Action |
+|---------|-------------|--------|
 | **Architecture migrates to OpenSearch agents** | Chat Engine moves inside ml-commons | Re-evaluate ml-commons memory |
 | **Conversations become authoritative sources** | System shifts to conversation-first | Semantic search may justify OpenSearch |
 | **Message volume exceeds 10M** | pgvector HNSW degrades | Add OpenSearch as secondary via CDC |
@@ -281,8 +315,10 @@ These are **architectural shifts**, not feature additions. If the fundamental na
 ### Core Schema
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS vector;  -- pgvector v0.8.2+
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Optional: Only if pgvector is approved
+-- CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE sessions (
     session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -304,13 +340,18 @@ CREATE TABLE messages (
     session_id UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
     content TEXT NOT NULL,
-    content_embedding vector(1536),
+    -- Optional: Only if pgvector is approved
+    -- content_embedding vector(1536),
     model_id TEXT,
     tokens_used INT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     metadata JSONB DEFAULT '{}',
     deleted_at TIMESTAMPTZ
 );
+
+-- Full-text search (always available)
+ALTER TABLE messages ADD COLUMN content_tsvector TSVECTOR
+    GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
 
 CREATE TABLE session_documents (
     doc_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -338,9 +379,14 @@ CREATE TABLE audit_log (
 CREATE INDEX messages_session_created_idx ON messages(session_id, created_at ASC)
     WHERE deleted_at IS NULL;
 
-CREATE INDEX messages_embedding_idx ON messages
-    USING hnsw (content_embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
+-- Full-text search index (always available)
+CREATE INDEX messages_content_tsvector_idx ON messages
+    USING GIN (content_tsvector) WHERE deleted_at IS NULL;
+
+-- Optional: Semantic search index (only if pgvector is approved)
+-- CREATE INDEX messages_embedding_idx ON messages
+--     USING hnsw (content_embedding vector_cosine_ops)
+--     WITH (m = 16, ef_construction = 64);
 
 CREATE INDEX sessions_user_updated_idx ON sessions(user_id, updated_at DESC);
 
@@ -397,10 +443,11 @@ CREATE INDEX messages_content_tsvector_idx ON messages
     USING GIN (content_tsvector) WHERE deleted_at IS NULL;
 ```
 
-#### 3. Semantic Search (Optional, If Needed)
+#### 3. Semantic Search (Optional - Requires pgvector)
 
 ```sql
 -- Find similar conversations via pgvector
+-- NOTE: Only available if pgvector extension is approved
 SELECT m.session_id, m.content, m.created_at,
        m.content_embedding <=> $1 as distance
 FROM messages m
@@ -410,8 +457,9 @@ ORDER BY m.content_embedding <=> $1
 LIMIT 10;
 ```
 
-**Index**: HNSW on `content_embedding`
+**Index**: HNSW on `content_embedding` (if pgvector approved)
 **Latency**: ~50-100ms for 1M messages
+**Status**: Optional — not required for core functionality
 
 #### 4. Session Activity Check (TTL)
 
@@ -462,7 +510,8 @@ async def search_messages(user_id: str, query: str, limit: int = 10):
         """, user_id, query, limit)
     return results
 
-# Semantic search (if needed)
+# Semantic search (optional - requires pgvector)
+# If pgvector is not approved, this feature is unavailable
 async def search_similar(query_embedding: list[float], limit: int = 10):
     async with db.transaction():
         results = await db.query("""
@@ -588,4 +637,5 @@ For Case Chat's requirements (EKS Chat Engine, ATO compliance, ACID, PITR, 7-yea
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.1.0 | 2026-04-22 | Clarified that pgvector is optional — Aurora PostgreSQL (with or without pgvector) is the correct choice. Updated schema to comment out pgvector-specific elements, added tsvector as always-available alternative for keyword search, added section on "If Semantic Search Required Without pgvector" with CDC to OpenSearch as option B |
 | 1.0.0 | 2026-04-22 | Consolidated from documents 15, 16, 17 — definitive Aurora recommendation for Case Chat conversation storage with technology comparison, OpenSearch ml-commons framework analysis, Case Chat decision rationale, implementation guidance, and scenarios where OpenSearch IS appropriate |
