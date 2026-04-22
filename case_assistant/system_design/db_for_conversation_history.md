@@ -1,6 +1,6 @@
 # Database for Conversation History: Aurora PostgreSQL vs OpenSearch
 
-**Document Version**: 2.1.0
+**Document Version**: 2.2.0
 **Date**: 2026-04-22
 **Author**: Principal AI Engineer
 **Status**: Design Recommendation
@@ -1671,6 +1671,76 @@ If you need to justify NOT using OpenSearch for chat history:
 
 ---
 
+## References
+
+### PostgreSQL Full-Text Search Documentation
+
+This document references PostgreSQL's native full-text search capabilities as an alternative to OpenSearch for conversation keyword search.
+
+| Function/Feature | Purpose | Documentation |
+|------------------|---------|---------------|
+| `plainto_tsquery()` | Converts unformatted text to tsquery (user-friendly) | [PostgreSQL Text Search Functions](https://www.postgresql.org/docs/current/functions-textsearch.html) |
+| `to_tsvector()` | Converts text to normalized tsvector for indexing | [PostgreSQL Text Search Types](https://www.postgresql.org/docs/current/datatype-textsearch.html) |
+| `to_tsquery()` | Converts structured query to tsquery with boolean operators | [PostgreSQL Text Search Functions](https://www.postgresql.org/docs/current/functions-textsearch.html) |
+| `@@` operator | Tests if tsvector matches tsquery | [PostgreSQL Text Search Introduction](https://www.postgresql.org/docs/current/textsearch-intro.html) |
+| `ts_rank()` | Returns relevance ranking for search results | [PostgreSQL Text Search Ranking](https://www.postgresql.org/docs/current/textsearch-controls.html#TEXTSEARCH-RANKING) |
+| `ts_headline()` | Highlights matching text in results | [PostgreSQL Text Search Headlining](https://www.postgresql.org/docs/current/textsearch-controls.html#TEXTSEARCH-HEADLINE) |
+| GIN Index | Optimized index for tsvector queries | [PostgreSQL GIN Indexes](https://www.postgresql.org/docs/current/indexes-types.html#INDEXES-TYPE-GIN) |
+
+#### Key Reference Links
+
+- **[Chapter 12: Full Text Search](https://www.postgresql.org/docs/current/textsearch.html)** — Complete PostgreSQL full-text search reference
+- **[Text Search Tables and Indexes](https://www.postgresql.org/docs/current/textsearch-tables.html)** — How to create and index tsvector columns
+- **[Text Search Functions](https://www.postgresql.org/docs/current/functions-textsearch.html)** — Complete function reference including `plainto_tsquery()`
+
+#### Example: plainto_tsquery for Chat Search
+
+```sql
+-- Create tsvector column (automatically generated)
+ALTER TABLE messages
+ADD COLUMN content_tsvector TSVECTOR
+GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+
+-- Create GIN index for fast search
+CREATE INDEX idx_messages_content_tsvector
+ON messages USING GIN (content_tsvector);
+
+-- Search using plainto_tsquery (user input friendly)
+SELECT m.session_id, m.content, m.created_at
+FROM messages m
+WHERE m.content_tsvector @@ plainto_tsquery('english', 'section 177D deduction')
+ORDER BY m.created_at DESC;
+
+-- plainto_tsquery automatically handles:
+-- - Lowercase conversion
+-- - Stop word removal
+-- - Stemming (deduction → deduct)
+-- - AND logic between words (no operators needed)
+```
+
+**Why plainto_tsquery?**
+- **User-friendly**: Accepts plain text input without boolean operators
+- **Safe**: Automatically normalizes and sanitizes input
+- **Simple**: No need for users to learn `&`, `|`, `!` syntax
+- **Chat use case**: Perfect for "what did I ask about X?" queries
+
+### OpenSearch Documentation
+
+| Topic | Documentation |
+|-------|---------------|
+| Agentic Memory | [OpenSearch Agentic Memory APIs](https://opensearch.org/docs/latest/ml-commons-plugin/memory-and-context/) |
+| Conversational Flow Agents | [OpenSearch Conversational Agents](https://opensearch.org/docs/latest/ml-commons-plugin/agents-and-tools/agents/) |
+| Vector Search | [OpenSearch k-NN API](https://opensearch.org/docs/latest/searching/knn/index.html) |
+
+### AWS Documentation
+
+| Topic | Documentation |
+|-------|---------------|
+| Amazon OpenSearch Service | [Amazon OpenSearch Service Documentation](https://docs.aws.amazon.com/opensearch-service/) |
+| Aurora PostgreSQL | [Amazon Aurora PostgreSQL Documentation](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/CHAP_AuroraPostgreSQL.html) |
+
+---
+
 ## Related Documents
 
 - [04-session-lifecycle.md](./04-session-lifecycle.md) - Session persistence requirements
@@ -1685,6 +1755,7 @@ If you need to justify NOT using OpenSearch for chat history:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.2.0 | 2026-04-22 | Added "References" section with PostgreSQL full-text search documentation links: plainto_tsquery(), to_tsvector(), to_tsquery(), GIN indexes, ts_rank(), ts_headline(). Includes example queries and explanation of why plainto_tsquery is suitable for chat search. Also added OpenSearch and AWS documentation links for agentic memory and vector search. |
 | 2.1.0 | 2026-04-22 | Added "External Research Evidence" section documenting web search findings: OpenSearch Blog agentic memory article, AWS Big Data Blog agentic AI content, 15+ web search queries that returned NO public case studies of OpenSearch for general chat history storage. Key finding: OpenSearch conversational memory is tightly coupled to ml-commons agent framework, NOT a general-purpose chat storage API. Provides evidence for political environments defending Aurora choice. |
 | 2.0.0 | 2026-04-22 | Major CDC section overhaul: added plain-English explanation of CDC (what/why/when), data flow diagram showing exactly what flows from Aurora to OpenSearch, clear Phase 4 framing (CDC not needed for MVP), fixed Option C (renamed from CDC to Polling), fixed Option B (removed broken wal2json import, simplified code), filled empty "When This Decision Would Change" section with 6 trigger conditions, added "recommended starting point" to Lambda Polling in comparison table |
 | 1.1.0 | 2026-04-22 | Clarified that pgvector is optional — Aurora PostgreSQL (with or without pgvector) is the correct choice. Updated schema to comment out pgvector-specific elements, added tsvector as always-available alternative for keyword search, added section on "If Semantic Search Required Without pgvector" with CDC to OpenSearch as option B |
