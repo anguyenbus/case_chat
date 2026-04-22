@@ -1,6 +1,6 @@
 # Database for Conversation History: Aurora PostgreSQL vs OpenSearch
 
-**Document Version**: 2.6.0
+**Document Version**: 2.7.0
 **Date**: 2026-04-22
 **Author**: Principal AI Engineer
 **Status**: Design Recommendation
@@ -40,13 +40,25 @@ This section answers common questions from technical leadership about conversati
 
 **Implementation Approaches:**
 
-| Approach | Description | Architectural Impact |
-|----------|-------------|---------------------|
-| **A: OpenSearch as Primary Store** | Store conversations directly in OpenSearch using ml-commons conversational memory APIs | Requires Chat Engine to run inside OpenSearch agent framework — major architectural change |
-| **B: Dual-Store Pattern** | Aurora primary + OpenSearch search index via CDC | Requires replication pipeline (DMS/Lambda), eventual consistency, dual operational overhead |
-| **C: OpenSearch for Search Only** | Aurora primary, manual export to OpenSearch for analytics | Batch ETL pipeline, not real-time search |
+| Approach | Description | Architectural Impact | When Appropriate |
+|----------|-------------|---------------------|------------------|
+| **A: OpenSearch as Primary Store** | Store conversations directly in OpenSearch as document storage | Still needs Aurora for compliance (ACID, PITR) | **NOT recommended** — dual storage complexity |
+| **B: Dual-Store Pattern** | Aurora primary + OpenSearch search index via CDC | Requires replication pipeline (DMS/Lambda), eventual consistency | When semantic search/analytics at scale is P0 |
+| **C: OpenSearch for Analytics** | Aurora primary, batch export to OpenSearch for analytics | ETL pipeline, not real-time search | When analytics is secondary need |
+| **D: Agentic Memory (Complementary)** | Aurora for transcripts + OpenSearch agentic memory for **extracted facts only** | External agent calls OpenSearch via REST API for fact storage/retrieval | When user personalization is required |
 
-**Key Constraint**: OpenSearch's agentic memory stores **extracted facts** (name, preferences, interests) via LLM inference — NOT full conversation transcripts. It's an optional personalization layer, NOT a replacement for primary conversation storage. External agents (LangChain, Agno, Strands) call OpenSearch via REST API — no architectural rewrite required.
+**Key Distinction**:
+
+| Purpose | Stores | Use Case |
+|---------|--------|----------|
+| **Aurora (transcripts)** | Full message history (role, content, timestamp) | Compliance, audit, sequential retrieval |
+| **Agentic Memory (facts)** | Extracted facts (name=Alex, likes=hiking) | Cross-session personalization |
+
+**Option D (Agentic Memory)** is fundamentally different from A-C:
+- A-C store/search **full conversation transcripts**
+- D stores **LLM-extracted facts** for personalization
+- External agents integrate via REST API — no architectural rewrite
+- Aurora remains REQUIRED for transcript storage
 
 ### Q2: Is OpenSearch recommended for conversation storage, and what evidence supports this?
 
@@ -2130,6 +2142,7 @@ ORDER BY m.created_at DESC;
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.7.0 | 2026-04-22 | Added **Option D** to Executive Q&A: "Agentic Memory (Complementary)" — distinct from A-C because it stores **extracted facts** for personalization, NOT full transcripts. Clarified that options A-C are about transcript storage/search, while D is about user profile facts (name, preferences, interests) stored via external agent REST API calls. Added comparison table showing Aurora (transcripts) vs Agentic Memory (facts) serve different purposes. |
 | 2.6.0 | 2026-04-22 | **CRITICAL CORRECTION**: Fixed incorrect statement that "agents must run inside OpenSearch." The tutorial shows **external agents** (Strands framework) calling OpenSearch agentic memory via REST API — agents run externally, OpenSearch provides memory backend via HTTP. Updated Executive Q&A, "When OpenSearch Memory Works" table, and "External Research Evidence" section. Added code example showing how external agents integrate with OpenSearch agentic memory. Key insight: No architectural rewrite required to add agentic memory — existing Chat Engine could integrate via REST API if needed. |
 | 2.5.0 | 2026-04-22 | Added clarification on OpenSearch Agentic Memory as **complementary layer for AI agents**, not replacement for primary conversation storage. Documents that agentic memory stores **extracted facts** (name, preferences, interests) NOT full conversation transcripts. Added architecture diagram showing Aurora (primary storage) with optional agentic memory layer for personalization. Updated Executive Summary to clarify agentic memory is optional add-on, Aurora still required for compliance. Updated "What ml-commons Memory IS vs ISN'T" table to reflect fact extraction use case. Source: OpenSearch ml-commons Agentic Memory Tutorial on GitHub. |
 | 2.4.0 | 2026-04-22 | Added "Storing Conversation History in OpenSearch WITHOUT ml-commons" section explaining how OpenSearch can be used as standard document storage (time-based indices, standard CRUD/_search APIs) separate from ml-commons conversational memory. Clarifies that even as "simple document store," OpenSearch lacks ACID, PITR, foreign keys — still requiring Aurora for compliance. Documents dual-store/CQRS pattern as correct approach if search is needed. |
