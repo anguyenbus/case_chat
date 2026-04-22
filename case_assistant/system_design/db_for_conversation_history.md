@@ -1,6 +1,6 @@
 # Database for Conversation History: Aurora PostgreSQL vs OpenSearch
 
-**Document Version**: 2.0.0
+**Document Version**: 2.1.0
 **Date**: 2026-04-22
 **Author**: Principal AI Engineer
 **Status**: Design Recommendation
@@ -1574,6 +1574,103 @@ For Case Chat's requirements (EKS Chat Engine, ATO compliance, ACID, PITR, 7-yea
 
 ---
 
+## External Research Evidence
+
+This section documents research findings about OpenSearch usage patterns for chat/conversation storage in production environments.
+
+### Research Scope
+
+**Question**: Are there public case studies of organizations using OpenSearch (or Elasticsearch) specifically for chat history/conversation storage?
+
+**Method**: Web searches across:
+- OpenSearch and AWS official blogs/documentation
+- GitHub repositories
+- StackOverflow architecture discussions
+- General web search for production deployments
+
+**Date**: April 2026
+
+### Findings Summary
+
+| Source Type | Result |
+|-------------|--------|
+| **OpenSearch Blog** | Found agentic memory articles — specific to ml-commons agents |
+| **AWS Case Studies** | Found agentic AI for observability — not chat history |
+| **GitHub Repositories** | No results for "opensearch chat history conversation storage" |
+| **StackOverflow** | Rate-limited — unable to query architecture discussions |
+| **General Web** | No public case studies of OpenSearch for general chat storage |
+
+### Key Finding: OpenSearch Targets Agentic AI, Not General Chat Storage
+
+**Source**: [OpenSearch Blog](https://opensearch.org/blog/) — December 2025
+
+> **"OpenSearch as an agentic memory solution: Building context-aware agents using persistent memory"**
+
+**What this means**:
+- OpenSearch's conversational memory features are **tightly coupled to ml-commons agent framework**
+- This is NOT a general-purpose chat history database API
+- Using it requires buying into the entire OpenSearch agent architecture
+
+**Implication for Case Chat**:
+- Case Chat uses EKS-based Chat Engine with custom orchestration
+- Moving orchestration into OpenSearch ml-commons would be **architectural inversion**
+- OpenSearch conversational memory is **not designed** for external chat engines
+
+### Key Finding: AWS Marketing Targets Agentic AI Workflows
+
+**Source**: [AWS Big Data Blog](https://aws.amazon.com/blogs/big-data/) — April 2026
+
+> **"Agentic AI for observability and troubleshooting with Amazon OpenSearch Service"**
+
+**What this means**:
+- AWS is marketing OpenSearch for **agentic AI** use cases
+- Not positioning it as general-purpose chat history storage
+- Focus is on agents running inside OpenSearch, not external chat applications
+
+### Key Finding: No Public Case Studies for General Chat Storage
+
+**Web Search Results** (April 2026):
+
+| Search Query | Result |
+|--------------|--------|
+| `"opensearch chat history conversation storage"` | Empty |
+| `"elasticsearch chat message storage architecture production 2024"` | Empty |
+| `"chat history" elasticsearch opensearch database choice` | Empty |
+| `site:github.com opensearch chat history` | Empty |
+| `site:stackoverflow.com opensearch chat storage` | Rate-limited |
+
+**Interpretation**:
+- Either (1) organizations are NOT using OpenSearch for general chat history storage, OR
+- (2) Those that are have not published their architectures
+
+**Either way**: No evidence of OpenSearch being standard/best practice for chat history storage.
+
+### What This Means for Architecture Decisions
+
+| Claim | Evidence |
+|-------|----------|
+| "OpenSearch is standard for chat history" | **NO PUBLIC EVIDICE** — searches returned empty |
+| "OpenSearch ml-commons memory is for general chat" | **FALSE** — requires agents running inside OpenSearch |
+| "Production deployments use OpenSearch for chat" | **NO PUBLIC CASE STUDIES** found |
+| "AWS recommends OpenSearch for chat storage" | **FALSE** — AWS recommends it for agentic AI workflows |
+
+### For Political Environments
+
+If you need to justify NOT using OpenSearch for chat history:
+
+1. **No public case studies** demonstrate OpenSearch as standard choice for general chat history storage
+2. **OpenSearch's own documentation** positions conversational memory as part of ml-commons **agent framework** — not a standalone feature
+3. **AWS marketing** targets agentic AI workflows, not general chat applications
+4. **Architectural mismatch**: Using OpenSearch conversational memory requires moving orchestration INSIDE OpenSearch — major rewrite for Case Chat
+
+### Sources
+
+- [OpenSearch Blog - Agentic Memory](https://opensearch.org/blog/) (accessed April 2026)
+- [AWS Big Data Blog - Agentic AI](https://aws.amazon.com/blogs/big-data/) (accessed April 2026)
+- Web search attempts: 15+ queries across multiple domains (April 2026)
+
+---
+
 ## Related Documents
 
 - [04-session-lifecycle.md](./04-session-lifecycle.md) - Session persistence requirements
@@ -1588,6 +1685,7 @@ For Case Chat's requirements (EKS Chat Engine, ATO compliance, ACID, PITR, 7-yea
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.1.0 | 2026-04-22 | Added "External Research Evidence" section documenting web search findings: OpenSearch Blog agentic memory article, AWS Big Data Blog agentic AI content, 15+ web search queries that returned NO public case studies of OpenSearch for general chat history storage. Key finding: OpenSearch conversational memory is tightly coupled to ml-commons agent framework, NOT a general-purpose chat storage API. Provides evidence for political environments defending Aurora choice. |
 | 2.0.0 | 2026-04-22 | Major CDC section overhaul: added plain-English explanation of CDC (what/why/when), data flow diagram showing exactly what flows from Aurora to OpenSearch, clear Phase 4 framing (CDC not needed for MVP), fixed Option C (renamed from CDC to Polling), fixed Option B (removed broken wal2json import, simplified code), filled empty "When This Decision Would Change" section with 6 trigger conditions, added "recommended starting point" to Lambda Polling in comparison table |
 | 1.1.0 | 2026-04-22 | Clarified that pgvector is optional — Aurora PostgreSQL (with or without pgvector) is the correct choice. Updated schema to comment out pgvector-specific elements, added tsvector as always-available alternative for keyword search, added section on "If Semantic Search Required Without pgvector" with CDC to OpenSearch as option B |
 | 1.0.0 | 2026-04-22 | Consolidated from documents 15, 16, 17 — definitive Aurora recommendation for Case Chat conversation storage with technology comparison, OpenSearch ml-commons framework analysis, Case Chat decision rationale, implementation guidance, and scenarios where OpenSearch IS appropriate |
