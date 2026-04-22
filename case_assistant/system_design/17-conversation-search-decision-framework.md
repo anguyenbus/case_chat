@@ -1,6 +1,6 @@
 # Conversation Search: Decision Framework
 
-**Document Version**: 1.0.0
+**Document Version**: 1.1.0
 **Date**: 2026-04-22
 **Author**: Principal AI Engineer
 **Status**: Decision Framework
@@ -383,5 +383,16 @@ Use this to gather missing requirements:
 
 **Related Documents**:
 - [16-conversation-storage-recommendation.md](./16-conversation-storage-recommendation.md)
+- [15-conversation-storage-analysis.md](./15-conversation-storage-analysis.md)
 - [09-user-stories.md](./09-user-stories.md)
+- [04-session-lifecycle.md](./04-session-lifecycle.md)
+
+---
+
+## Change History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0.0 | 2026-04-22 | Initial decision framework document with 9-part analysis (requirement discovery, decision matrix, decision tree, archetype analysis, hybrid architecture, recommendation framework, ATO considerations, decision checklist, stakeholder questionnaire) |
+| 1.1.0 | 2026-04-22 | Removed phased approach language — definitive Aurora recommendation based on domain analysis (document-first vs conversation-first), clarified that OpenSearch is only justified if conversations are primary knowledge artifacts or architecture migrates to ml-commons agents |
 - [04-session-lifecycle.md](./04-session-lifecycle.md)
